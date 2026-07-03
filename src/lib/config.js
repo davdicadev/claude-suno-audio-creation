@@ -41,6 +41,11 @@ function loadConfig(configPath) {
     ffmpegPath: raw.ffmpegPath || "ffmpeg",
     ffprobePath: raw.ffprobePath || "ffprobe",
     sunoUrl: raw.sunoUrl || "https://suno.com",
+    // Canale browser: "chrome" usa il Google Chrome installato (consigliato per
+    // superare il blocco del login Google), "msedge" per Edge, "" per il
+    // Chromium interno di Playwright.
+    browserChannel:
+      raw.browserChannel === undefined ? "chrome" : raw.browserChannel,
     // Cartella che contiene un profilo browser (= una sessione/account Suno)
     // per ogni nome profilo usato dai progetti.
     browserProfilesDir:

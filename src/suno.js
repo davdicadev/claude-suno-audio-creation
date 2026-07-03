@@ -550,11 +550,41 @@ function waitForEnter() {
 async function openContextForProfile(cfg, profile) {
   const dir = path.join(cfg.browserProfilesDir, safeProfileDirName(profile));
   fs.mkdirSync(dir, { recursive: true });
-  const context = await chromium.launchPersistentContext(dir, {
+
+  // Flag che riducono il "fingerprint" da automazione: senza questi, Google
+  // blocca il login OAuth ("questo browser potrebbe non essere sicuro").
+  const baseOpts = {
     headless: false,
     viewport: { width: 1400, height: 900 },
     acceptDownloads: true,
+    args: ["--disable-blink-features=AutomationControlled"],
+    ignoreDefaultArgs: ["--enable-automation"],
+  };
+
+  let context = null;
+  const channel = cfg.browserChannel;
+  if (channel) {
+    try {
+      context = await chromium.launchPersistentContext(dir, {
+        ...baseOpts,
+        channel,
+      });
+    } catch (e) {
+      log.warn(
+        `Browser '${channel}' non disponibile (${e.message}). ` +
+          "Uso il Chromium interno di Playwright."
+      );
+    }
+  }
+  if (!context) {
+    context = await chromium.launchPersistentContext(dir, baseOpts);
+  }
+
+  // Stealth leggero: nasconde navigator.webdriver alle pagine.
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
   });
+
   const page = context.pages()[0] || (await context.newPage());
   return { context, page };
 }

@@ -198,6 +198,21 @@ Se la fase 1 si ferma dicendo che non trova il campo prompt / il toggle / il bot
 
 ---
 
+## Se il login con Google viene bloccato
+
+Google a volte rifiuta il login nelle finestre pilotate da un programma ("Impossibile eseguire l'accesso — questo browser potrebbe non essere sicuro"). L'automazione è già configurata per ridurre il problema: usa il tuo **Google Chrome** installato con i flag anti-blocco. Se compare comunque, in ordine:
+
+1. **Usa un altro metodo di login su Suno.** Nella pagina di login di Suno scegli **email/password** (se il tuo account ne ha una) oppure **Discord** / **Apple**: di solito non applicano lo stesso blocco di Google. È la soluzione più semplice.
+   - Se il tuo account Suno è nato con Google e non ha una password, puoi impostarne una: su suno.com → impostazioni account, oppure crea un accesso email.
+
+2. **Assicurati di avere Google Chrome installato** (non solo Edge): l'automazione lo usa in automatico. Se non ce l'hai, scaricalo da google.com/chrome.
+
+3. **Se proprio Google resta bloccato**, si può far riutilizzare all'automazione una sessione fatta a mano nel tuo browser normale (import dei cookie di Suno). È un passaggio in più: se arrivi a questo punto, scrivimi e ti preparo lo script apposito.
+
+Dopo aver fatto il login con uno di questi metodi, l'automazione riusa la sessione salvata: non dovrai rifarlo a ogni esecuzione.
+
+---
+
 ## Struttura dell'output
 
 ```
@@ -221,6 +236,7 @@ C:\n8n\suno\
 | `ANTHROPIC_API_KEY` non trovata | Hai fatto `setx` ma non hai riaperto il terminale. Chiudi e riapri PowerShell. |
 | `ffmpeg`/`ffprobe` non riconosciuti | Installa con `scoop install ffmpeg`, oppure metti in `projects.json` il percorso completo agli `.exe`. |
 | Il browser non parte / errore Playwright | Riesegui `npx playwright install chromium`. |
+| Login Google: "questo browser potrebbe non essere sicuro" | Google blocca l'automazione. L'automazione usa già il tuo **Google Chrome** con i flag anti-blocco; se persiste, accedi a Suno con **email/password** o **Discord/Apple** invece che con Google. Vedi la sezione "Login Google bloccato" qui sotto. |
 | La generazione non trova un elemento | Aggiorna il selettore in `src\lib\suno-selectors.js` (Passo 9). |
 | Montaggio FFMPEG fallisce | Lancia `node src/build-playlists.js --reencode` (ricodifica invece di copiare). |
 | Credito Claude esaurito | Ricarica su console.anthropic.com e rilancia solo le fasi mancanti: `node src/run.js --phase titles,playlists`. |
