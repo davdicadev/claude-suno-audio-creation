@@ -34,20 +34,27 @@ function loadConfig(configPath) {
     throw new Error("Config: 'progetti' deve essere un array non vuoto.");
   }
 
+  const maxBatchGlobal = int(raw.maxGenerazioniPerBatch, 10);
+
   const cfg = {
     baseDir: raw.baseDir,
     ffmpegPath: raw.ffmpegPath || "ffmpeg",
     ffprobePath: raw.ffprobePath || "ffprobe",
     sunoUrl: raw.sunoUrl || "https://suno.com",
-    browserProfileDir:
-      raw.browserProfileDir || path.join(raw.baseDir, "browser-profile"),
+    // Cartella che contiene un profilo browser (= una sessione/account Suno)
+    // per ogni nome profilo usato dai progetti.
+    browserProfilesDir:
+      raw.browserProfilesDir || path.join(raw.baseDir, "browser-profiles"),
+    maxGenerazioniPerBatch: maxBatchGlobal,
     configPath: p,
-    progetti: raw.progetti.map((pr, i) => normalizeProject(pr, i, raw.baseDir)),
+    progetti: raw.progetti.map((pr, i) =>
+      normalizeProject(pr, i, raw.baseDir, maxBatchGlobal)
+    ),
   };
   return cfg;
 }
 
-function normalizeProject(pr, index, baseDir) {
+function normalizeProject(pr, index, baseDir, maxBatchGlobal) {
   if (!pr.nome) throw new Error(`Progetto #${index}: manca 'nome'.`);
   if (!Array.isArray(pr.prompts) || pr.prompts.length === 0) {
     throw new Error(`Progetto '${pr.nome}': 'prompts' vuoto.`);
@@ -71,6 +78,10 @@ function normalizeProject(pr, index, baseDir) {
   const project = {
     nome: pr.nome,
     attivo: pr.attivo !== false,
+    // Nome del profilo browser = account Suno. Progetti con lo stesso valore
+    // condividono l'account; valori diversi usano account diversi.
+    sunoProfilo: String(pr.sunoProfilo || "default").trim() || "default",
+    maxGenerazioniPerBatch: int(pr.maxGenerazioniPerBatch, maxBatchGlobal),
     keywordsTitoli: Array.isArray(pr.keywordsTitoli) ? pr.keywordsTitoli : [],
     prompts: pr.prompts.map((x, j) => ({
       testo: String(x.testo || "").trim(),
@@ -96,6 +107,12 @@ function normalizeProject(pr, index, baseDir) {
       throw new Error(`Progetto '${pr.nome}': un prompt ha 'testo' vuoto.`);
     }
   }
+
+  // Suno elabora al massimo ~10 generazioni contemporaneamente: limita il lotto.
+  project.maxGenerazioniPerBatch = Math.min(
+    10,
+    Math.max(1, project.maxGenerazioniPerBatch)
+  );
 
   project.fabbisogno = computeGenerationNeeds(project);
   return project;

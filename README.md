@@ -84,7 +84,7 @@ echo $env:ANTHROPIC_API_KEY
 
 ---
 
-## 3. Primo login a Suno (una volta sola)
+## 3. Primo login a Suno (una volta sola per account)
 
 Usiamo un **profilo browser persistente**: fai il login a mano una volta, poi l'automazione riusa la sessione.
 
@@ -93,7 +93,20 @@ npm run login
 # oppure: node src/suno.js --login-only
 ```
 
-Si apre una finestra di Chrome su Suno: **accedi** (Google/Discord/email). Quando vedi la tua libreria, torna al terminale e premi **INVIO**. La sessione resta salvata in `browser-profile/`.
+Si apre una finestra di Chrome su Suno: **accedi** (Google/Discord/email). Quando vedi la tua libreria, torna al terminale e premi **INVIO**. La sessione resta salvata in `<baseDir>/browser-profiles/default/`.
+
+### Più account Suno
+
+Puoi usare **account Suno diversi per progetti diversi**, anche nella stessa esecuzione. Ogni account = un **profilo** con un nome. Fai il login una volta per ciascuno:
+
+```bash
+node src/suno.js --login-only --profile default
+node src/suno.js --login-only --profile account-2
+```
+
+Poi nel progetto indichi quale account usare col campo `sunoProfilo` (vedi sotto). I progetti vengono elaborati **in sequenza**: quando l'automazione passa a un progetto con un account diverso, chiude il browser e ne apre uno con il profilo giusto. Progetti che usano lo stesso account non riaprono il browser.
+
+> Nota: gli account vengono usati **uno alla volta** (non in parallelo). Questo è anche il comportamento voluto, per non sovraccaricare Suno.
 
 ---
 
@@ -113,11 +126,13 @@ Struttura (un blocco per canale YouTube):
   "ffmpegPath": "ffmpeg",              // o percorso completo a ffmpeg.exe
   "ffprobePath": "ffprobe",            // o percorso completo a ffprobe.exe
   "sunoUrl": "https://suno.com",
+  "maxGenerazioniPerBatch": 10,        // generazioni per lotto (max 10, vedi sotto)
 
   "progetti": [
     {
       "nome": "canale-lofi",           // diventa la sottocartella dell'output
       "attivo": true,                  // false = salta questo progetto
+      "sunoProfilo": "default",        // account Suno da usare (vedi "Più account")
       "keywordsTitoli": ["lofi", "study beats", "relax"],  // guidano i titoli di Claude
       "prompts": [
         { "testo": "warm lofi hip hop, rainy night", "strumentale": true },
@@ -128,7 +143,8 @@ Struttura (un blocco per canale YouTube):
         "daB": 2,                      // quante playlist pescano dalla cartella B
         "braniPerPlaylist": 50         // N brani per playlist
       },
-      "margineGenerazione": 0.15       // 15% di brani in più per sicurezza (riserva C)
+      "margineGenerazione": 0.15,      // 15% di brani in più per sicurezza (riserva C)
+      "maxGenerazioniPerBatch": 10     // opzionale: override del valore globale
     }
   ]
 }
@@ -136,6 +152,11 @@ Struttura (un blocco per canale YouTube):
 
 - **strumentale**: per ogni prompt scegli se il brano è strumentale (`true`) o cantato (`false`).
 - **daA / daB**: possono anche essere diversi (es. 3 e 1).
+- **sunoProfilo**: quale account Suno usare (vedi sezione "Più account Suno"). Se omesso, usa `default`.
+
+### Download a lotti
+
+Le generazioni non vengono lanciate tutte insieme: l'automazione procede a **lotti** di `maxGenerazioniPerBatch` (default **10**, il massimo che Suno elabora in contemporanea, ~20 brani). Per ogni lotto: **lancia** le generazioni → **attende** il completamento → **scarica** i brani → passa al lotto successivo. Così Suno non viene sovraccaricato e i brani vengono salvati progressivamente (se qualcosa si interrompe, i lotti già scaricati restano). Lo smistamento A/B usa le **coppie reali** restituite da ogni generazione (1° brano → A, 2° → B; generazione singola → C).
 
 ### Quanti brani vengono generati?
 
@@ -191,7 +212,8 @@ Opzioni utili:
 
 ```
 <baseDir>\
-  browser-profile\                  (sessione Suno persistente)
+  browser-profiles\                 (un profilo/sessione per account Suno)
+    default\  account-2\ ...
   <nome-progetto>\
     cartella-A\  cartella-B\  cartella-C\   (MP3 scaricati, rinominati)
     manifest.json                    (elenco brani: id, cartella, titoli)

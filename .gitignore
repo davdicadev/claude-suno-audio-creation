@@ -4,9 +4,11 @@ node_modules/
 # Config locale con i tuoi progetti (parti da config/projects.example.json)
 config/projects.json
 
-# Profilo browser persistente (contiene la sessione di login a Suno)
+# Profili browser persistenti (contengono le sessioni di login a Suno)
 browser-profile/
+browser-profiles/
 **/browser-profile/
+**/browser-profiles/
 
 # Output audio e file generati
 *.mp3

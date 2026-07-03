@@ -52,7 +52,7 @@ module.exports = {
     navigation: 60000,
     afterCreateClick: 2500, // pausa tra un click "Create" e il successivo
     pollInterval: 15000, // ogni quanto ricontrollare la libreria
-    pollMax: 40 * 60 * 1000, // tempo massimo totale di attesa download (40 min)
+    pollMaxPerBatch: 15 * 60 * 1000, // attesa massima per completare UN lotto
     loginWait: 10 * 60 * 1000, // tempo per fare il login manuale
   },
 };

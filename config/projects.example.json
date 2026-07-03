@@ -7,10 +7,15 @@
 
   "sunoUrl": "https://suno.com",
 
+  "_nota_batch": "maxGenerazioniPerBatch: quante generazioni lanciare insieme prima di attendere e scaricare (max 10, il massimo che Suno elabora in contemporanea). Ogni generazione = ~2 brani.",
+  "maxGenerazioniPerBatch": 10,
+
   "progetti": [
     {
       "nome": "canale-lofi",
       "attivo": true,
+      "_nota_account": "sunoProfilo: nome del profilo browser = account Suno. Progetti con lo stesso valore usano lo stesso account; valori diversi usano account diversi (in sequenza).",
+      "sunoProfilo": "default",
       "keywordsTitoli": ["lofi", "study beats", "relax", "chill", "focus"],
       "prompts": [
         {
@@ -32,6 +37,8 @@
     {
       "nome": "canale-ambient",
       "attivo": false,
+      "sunoProfilo": "account-2",
+      "maxGenerazioniPerBatch": 8,
       "keywordsTitoli": ["ambient", "sleep", "deep relaxation", "meditation"],
       "prompts": [
         {

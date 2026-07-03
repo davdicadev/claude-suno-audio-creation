@@ -5,18 +5,24 @@
  * Fase 1: generazione brani su Suno via automazione del browser (Playwright) e
  * download in locale, smistati nelle cartelle A / B / C.
  *
- * - Usa un PROFILO PERSISTENTE: il login lo fai UNA volta a mano
- *     node src/suno.js --login-only
- *   poi la sessione resta salvata e lo script la riusa.
- * - La scoperta dei brani avviene leggendo le risposte che la pagina Suno
- *   riceve gia da sola durante la navigazione (nessuna API con chiave).
- * - Il download degli MP3 usa la stessa sessione autenticata del browser.
+ * Come funziona (per ogni progetto):
+ *   - usa il PROFILO BROWSER indicato dal progetto (= un account Suno). Progetti
+ *     con lo stesso 'sunoProfilo' condividono l'account; valori diversi usano
+ *     account diversi (elaborati in sequenza nella stessa esecuzione);
+ *   - lancia le generazioni A LOTTI di 'maxGenerazioniPerBatch' (max 10, il
+ *     massimo che Suno elabora insieme, ~20 brani), ATTENDE il completamento del
+ *     lotto, SCARICA i brani, poi prosegue col lotto successivo;
+ *   - lo smistamento A/B/C usa le COPPIE restituite da ogni generazione (1o
+ *     brano -> A, 2o -> B; generazione singola -> C).
+ *
+ * La scoperta dei brani avviene leggendo le risposte che la pagina Suno riceve
+ * gia da sola (nessuna API con chiave). Il download usa la sessione autenticata.
  *
  * Uso:
- *   node src/suno.js --login-only            # solo primo login
- *   node src/suno.js                         # tutti i progetti attivi
- *   node src/suno.js --project canale-lofi   # un solo progetto
- *   node src/suno.js --config path.json      # config alternativa
+ *   node src/suno.js --login-only [--profile nome]   # primo login di un account
+ *   node src/suno.js                                  # tutti i progetti attivi
+ *   node src/suno.js --project canale-lofi            # un solo progetto
+ *   node src/suno.js --config path.json               # config alternativa
  */
 
 const fs = require("fs");
@@ -28,12 +34,13 @@ const SEL = require("./lib/suno-selectors");
 const log = require("./lib/logger");
 
 function parseArgs(argv) {
-  const args = { loginOnly: false, project: null, config: null };
+  const args = { loginOnly: false, project: null, config: null, profile: null };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--login-only") args.loginOnly = true;
     else if (a === "--project") args.project = argv[++i];
     else if (a === "--config") args.config = argv[++i];
+    else if (a === "--profile") args.profile = argv[++i];
   }
   return args;
 }
@@ -42,6 +49,10 @@ function ensureDirs(project) {
   for (const key of ["root", "A", "B", "C", "export", "tracklist"]) {
     fs.mkdirSync(project.dirs[key], { recursive: true });
   }
+}
+
+function safeProfileDirName(name) {
+  return String(name || "default").replace(/[^A-Za-z0-9_-]/g, "_") || "default";
 }
 
 /** Ritorna il primo locator che esiste tra una lista di selettori. */
@@ -58,42 +69,76 @@ async function firstLocator(scope, selectors, timeout = 4000) {
   return null;
 }
 
-/** Estrae ricorsivamente oggetti "clip" (id + audio_url) da un JSON qualsiasi. */
-function extractClips(node, out, seen) {
+/** Un oggetto sembra un "clip" di Suno? (id lungo + almeno un campo tipico) */
+function looksLikeClip(node) {
+  if (!node || typeof node !== "object") return false;
+  const id = node.id || node.clip_id || node.song_id;
+  if (typeof id !== "string") return false;
+  const hasAudio =
+    node.audio_url || node.audioUrl || node.audio || node.mp3_url;
+  const hasField =
+    hasAudio ||
+    node.status ||
+    node.state ||
+    node.title != null ||
+    node.created_at ||
+    node.createdAt;
+  return !!hasField && (id.length >= 16 || !!hasAudio);
+}
+
+function toClip(node) {
+  return {
+    id: String(node.id || node.clip_id || node.song_id),
+    audioUrl:
+      node.audio_url || node.audioUrl || node.audio || node.mp3_url || null,
+    title: node.title != null ? node.title : node.name || "brano",
+    status: node.status || node.state || null,
+    createdAt:
+      node.created_at || node.createdAt || node.created || node.date || null,
+  };
+}
+
+/** Estrae ricorsivamente i clip da un JSON qualsiasi (in ordine di comparsa). */
+function extractClipObjects(node, out, seen) {
   if (!node || typeof node !== "object") return;
   if (Array.isArray(node)) {
-    for (const el of node) extractClips(el, out, seen);
+    for (const el of node) extractClipObjects(el, out, seen);
     return;
   }
-  const id = node.id || node.clip_id || node.song_id;
-  const audio =
-    node.audio_url || node.audioUrl || node.audio || node.mp3_url || null;
-  if (id && audio && !seen.has(id)) {
-    seen.add(id);
-    out.push({
-      id: String(id),
-      audioUrl: String(audio),
-      title: node.title || node.name || "brano",
-      status: node.status || node.state || "complete",
-      createdAt:
-        node.created_at || node.createdAt || node.created || node.date || null,
-    });
+  if (looksLikeClip(node)) {
+    const c = toClip(node);
+    if (!seen.has(c.id)) {
+      seen.add(c.id);
+      out.push(c);
+    }
   }
   for (const k of Object.keys(node)) {
     if (k === "id") continue;
-    extractClips(node[k], out, seen);
+    extractClipObjects(node[k], out, seen);
+  }
+}
+
+// Compatibilita: versione storica che richiede audio_url (usata nei test).
+function extractClips(node, out, seen) {
+  const tmp = [];
+  extractClipObjects(node, tmp, new Set());
+  for (const c of tmp) {
+    if (c.audioUrl && !seen.has(c.id)) {
+      seen.add(c.id);
+      out.push(c);
+    }
   }
 }
 
 /**
- * Collega un listener alle risposte di rete. Serve a due scopi:
- *  - dalle risposte di GENERAZIONE ricava gli id dei brani appena creati
- *    (expectedIds): cosi sappiamo esattamente quali brani sono di QUESTA
- *    esecuzione e non tocchiamo la libreria vecchia;
- *  - dai FEED aggiorna lo stato/audio_url di quei brani in `store`.
- * Ritorna una funzione per staccare il listener a fine progetto.
+ * Listener sulle risposte di rete:
+ *  - dalle risposte di GENERAZIONE ricava le COPPIE di brani appena creati
+ *    (una "generazione" = i clip restituiti da una singola risposta di generate)
+ *    e i loro id (expectedIds = brani di QUESTA esecuzione);
+ *  - dai FEED aggiorna stato/audio_url dei brani in `store`.
+ * Ritorna una funzione per staccare il listener.
  */
-function attachClipCollector(context, store, expectedIds) {
+function attachClipCollector(context, ctx) {
   const handler = async (resp) => {
     const url = resp.url();
     const isFeed = SEL.feedUrlFragments.some((f) => url.includes(f));
@@ -106,79 +151,61 @@ function attachClipCollector(context, store, expectedIds) {
       return;
     }
     const found = [];
-    extractClips(json, found, new Set());
+    extractClipObjects(json, found, new Set());
+    if (found.length === 0) return;
+
     for (const c of found) {
-      // aggiorna sempre lo store (l'ultima versione vince: status/audio_url)
-      const prev = store.get(c.id);
-      store.set(c.id, prev ? { ...prev, ...c } : c);
-      // se il brano arriva da una risposta di generazione, e "nostro"
-      if (isGen) expectedIds.add(c.id);
+      const prev = ctx.store.get(c.id);
+      // l'ultima versione vince, ma non azzerare audioUrl gia noto
+      const merged = prev ? { ...prev, ...c } : c;
+      if (prev && prev.audioUrl && !c.audioUrl) merged.audioUrl = prev.audioUrl;
+      ctx.store.set(c.id, merged);
+    }
+    if (isGen) {
+      const ids = found.map((c) => c.id);
+      ctx.generations.push(ids);
+      for (const id of ids) ctx.expectedIds.add(id);
     }
   };
   context.on("response", handler);
   return () => context.off("response", handler);
 }
 
-/**
- * Limita i brani a quelli di QUESTA esecuzione:
- *  - se abbiamo intercettato gli id di generazione, usiamo solo quelli;
- *  - altrimenti (fallback) teniamo i brani creati dopo l'inizio run.
- */
-function scopeClips(store, expectedIds, runStart) {
-  const all = [...store.values()];
-  if (expectedIds.size > 0) {
-    return all.filter((c) => expectedIds.has(c.id));
+/** Limita i brani a quelli di QUESTA esecuzione (id di generazione o tempo). */
+function scopeClips(ctx, runStart) {
+  const all = [...ctx.store.values()];
+  if (ctx.expectedIds.size > 0) {
+    return all.filter((c) => ctx.expectedIds.has(c.id));
   }
-  const cutoff = runStart - 60 * 1000; // 1 min di margine
+  const cutoff = runStart - 60 * 1000;
   return all.filter((c) => {
     const t = c.createdAt ? Date.parse(c.createdAt) : NaN;
     return Number.isFinite(t) ? t >= cutoff : false;
   });
 }
 
-/** Lancia le generazioni per un progetto (senza attendere il completamento). */
-async function generateForProject(page, project) {
-  const base = project._sunoUrl;
-  log.step(`[${project.nome}] apro la pagina di creazione`);
-  await page.goto(base + SEL.createUrl, {
-    waitUntil: "domcontentloaded",
-    timeout: SEL.timeouts.navigation,
-  });
-  await page.waitForTimeout(2000);
+function isComplete(status) {
+  if (!status) return true;
+  const s = String(status).toLowerCase();
+  return (
+    s === "complete" || s === "completed" || s === "streaming" || s === "done"
+  );
+}
 
-  for (let pi = 0; pi < project.prompts.length; pi++) {
-    const prompt = project.prompts[pi];
-    const clicks = project.fabbisogno.clickPerPrompt[pi] || 0;
-    if (clicks < 1) continue;
-    log.step(
-      `[${project.nome}] prompt ${pi + 1}/${project.prompts.length} -> ${clicks} generazioni ` +
-        `(strumentale: ${prompt.strumentale ? "si" : "no"})`
-    );
+function isReady(clip) {
+  return !!(clip && clip.audioUrl && isComplete(clip.status));
+}
 
-    // Imposta il toggle strumentale allo stato richiesto.
-    await setInstrumental(page, prompt.strumentale);
-
-    for (let n = 0; n < clicks; n++) {
-      const textarea = await firstLocator(page, SEL.promptTextarea);
-      if (!textarea) {
-        throw new Error(
-          `[${project.nome}] campo prompt non trovato. Aggiorna 'promptTextarea' in src/lib/suno-selectors.js`
-        );
-      }
-      await textarea.fill(prompt.testo);
-      await page.waitForTimeout(300);
-
-      const createBtn = await firstLocator(page, SEL.createButton);
-      if (!createBtn) {
-        throw new Error(
-          `[${project.nome}] bottone Create non trovato. Aggiorna 'createButton' in src/lib/suno-selectors.js`
-        );
-      }
-      await createBtn.click();
-      log.info(`[${project.nome}]   generazione ${n + 1}/${clicks} avviata`);
-      await page.waitForTimeout(SEL.timeouts.afterCreateClick);
+/** Costruisce la coda dei "click" di generazione (uno per brano-coppia). */
+function buildClickQueue(project) {
+  const q = [];
+  project.prompts.forEach((p, i) => {
+    const n = project.fabbisogno.clickPerPrompt[i] || 0;
+    for (let k = 0; k < n; k++) {
+      q.push({ testo: p.testo, strumentale: p.strumentale });
     }
-  }
+  });
+  return q;
 }
 
 async function setInstrumental(page, wanted) {
@@ -209,66 +236,173 @@ async function setInstrumental(page, wanted) {
   }
 }
 
-/** Ricarica periodicamente e accumula i brani completi finche non bastano. */
-async function pollUntilReady(page, project, store, expectedIds, runStart) {
+/** Lancia un lotto di generazioni (senza attendere il completamento). */
+async function launchBatch(page, project, batch) {
   const base = project._sunoUrl;
-  const target = project.fabbisogno.clickTotali * 2; // 2 brani per click
-  const enough = project.fabbisogno.bisognoA + project.fabbisogno.bisognoB;
+  await page.goto(base + SEL.createUrl, {
+    waitUntil: "domcontentloaded",
+    timeout: SEL.timeouts.navigation,
+  });
+  await page.waitForTimeout(1500);
+
+  for (let i = 0; i < batch.length; i++) {
+    const click = batch[i];
+    await setInstrumental(page, click.strumentale);
+
+    const textarea = await firstLocator(page, SEL.promptTextarea);
+    if (!textarea) {
+      throw new Error(
+        `[${project.nome}] campo prompt non trovato. Aggiorna 'promptTextarea' in src/lib/suno-selectors.js`
+      );
+    }
+    await textarea.fill(click.testo);
+    await page.waitForTimeout(300);
+
+    const createBtn = await firstLocator(page, SEL.createButton);
+    if (!createBtn) {
+      throw new Error(
+        `[${project.nome}] bottone Create non trovato. Aggiorna 'createButton' in src/lib/suno-selectors.js`
+      );
+    }
+    await createBtn.click();
+    log.info(
+      `[${project.nome}]   generazione ${i + 1}/${batch.length} del lotto avviata ` +
+        `(strumentale: ${click.strumentale ? "si" : "no"})`
+    );
+    await page.waitForTimeout(SEL.timeouts.afterCreateClick);
+  }
+}
+
+/** Quanti brani del run sono pronti e NON ancora scaricati. */
+function readyNotDownloaded(ctx, runStart) {
+  return scopeClips(ctx, runStart).filter(
+    (c) => isReady(c) && !ctx.downloadedIds.has(c.id)
+  );
+}
+
+/** Attende il completamento di un lotto (o timeout), ricaricando la libreria. */
+async function pollBatch(page, project, ctx, runStart, expectedNew) {
+  const base = project._sunoUrl;
   const start = Date.now();
-  let lastReady = -1;
+  let last = -1;
   let stable = 0;
 
   log.step(
-    `[${project.nome}] attendo il completamento dei brani (obiettivo ~${target}, minimo utile ${enough})`
+    `[${project.nome}]   attendo il completamento del lotto (~${expectedNew} brani attesi)`
   );
 
-  while (Date.now() - start < SEL.timeouts.pollMax) {
-    // Ricarica la libreria: la pagina rifara' le chiamate feed che intercettiamo.
+  while (Date.now() - start < SEL.timeouts.pollMaxPerBatch) {
     try {
       await page.goto(base + SEL.createUrl, {
         waitUntil: "domcontentloaded",
         timeout: SEL.timeouts.navigation,
       });
     } catch (_) {
-      /* riprova al prossimo giro */
+      /* riprova */
     }
     await page.waitForTimeout(4000);
 
-    const ready = scopeClips(store, expectedIds, runStart).filter(
-      (c) => c.audioUrl && isComplete(c.status)
-    );
+    const count = readyNotDownloaded(ctx, runStart).length;
     log.info(
-      `[${project.nome}]   brani pronti: ${ready.length} ` +
-        `(trascorsi ${Math.round((Date.now() - start) / 1000)}s)`
+      `[${project.nome}]   pronti nel lotto: ${count}/${expectedNew} ` +
+        `(${Math.round((Date.now() - start) / 1000)}s)`
     );
 
-    if (ready.length >= target) {
-      log.info(`[${project.nome}] raggiunto l'obiettivo di brani.`);
-      break;
-    }
-    if (ready.length === lastReady) {
+    if (count >= expectedNew) break;
+    if (count === last) {
       stable += 1;
-      // Se il numero non cresce da un po' ma ne ho abbastanza, esco.
-      if (stable >= 3 && ready.length >= enough) {
-        log.info(`[${project.nome}] conteggio stabile e sufficiente, procedo.`);
+      if (stable >= 3 && count > 0) {
+        log.info(`[${project.nome}]   conteggio stabile, procedo col download.`);
         break;
       }
     } else {
       stable = 0;
-      lastReady = ready.length;
+      last = count;
     }
     await page.waitForTimeout(SEL.timeouts.pollInterval);
   }
-
-  return scopeClips(store, expectedIds, runStart).filter(
-    (c) => c.audioUrl && isComplete(c.status)
-  );
 }
 
-function isComplete(status) {
-  if (!status) return true;
-  const s = String(status).toLowerCase();
-  return s === "complete" || s === "completed" || s === "streaming" || s === "done";
+// Ordina i clip di una coppia/gruppo e assegna A / B / C.
+function assignGroupClips(clips, result) {
+  const t = (c) => (c.createdAt ? Date.parse(c.createdAt) : 0) || 0;
+  const ordered = clips
+    .slice()
+    .sort((a, b) => t(a) - t(b) || String(a.id).localeCompare(String(b.id)));
+  if (ordered.length >= 2) {
+    result.push({ clip: ordered[0], folder: "A" });
+    result.push({ clip: ordered[1], folder: "B" });
+    for (let i = 2; i < ordered.length; i++) {
+      result.push({ clip: ordered[i], folder: "C" });
+    }
+  } else if (ordered.length === 1) {
+    result.push({ clip: ordered[0], folder: "C" });
+  }
+}
+
+// Fallback: accoppia per titolo + vicinanza temporale (se mancano i gruppi).
+function pairByTitleTime(clips, result, finalize) {
+  const tol = 120 * 1000;
+  const t = (c) => (c.createdAt ? Date.parse(c.createdAt) : 0) || 0;
+  const norm = (c) => String(c.title || "brano").trim().toLowerCase();
+  const groups = new Map();
+  for (const c of clips) {
+    const k = norm(c);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(c);
+  }
+  for (const arr of groups.values()) {
+    arr.sort((a, b) => t(a) - t(b));
+    let i = 0;
+    while (i < arr.length) {
+      if (i + 1 < arr.length && Math.abs(t(arr[i + 1]) - t(arr[i])) <= tol) {
+        result.push({ clip: arr[i], folder: "A" });
+        result.push({ clip: arr[i + 1], folder: "B" });
+        i += 2;
+      } else if (finalize) {
+        result.push({ clip: arr[i], folder: "C" });
+        i += 1;
+      } else {
+        break; // brano spaiato: aspetta il gemello in un giro successivo
+      }
+    }
+  }
+}
+
+/**
+ * Decide cosa scaricare adesso.
+ *  - Gruppi di generazione COMPLETI (tutti i brani pronti) -> A/B/C accurato.
+ *  - Con finalize=true assegna anche i gruppi/brani rimasti a meta.
+ *  - Fallback per brani non coperti da alcun gruppo: titolo+tempo.
+ */
+function planAssignments(ctx, runStart, finalize) {
+  const result = [];
+  const covered = new Set();
+
+  for (const g of ctx.generations) {
+    const clips = g.map((id) => ctx.store.get(id)).filter(Boolean);
+    const usable = clips.filter(
+      (c) => isReady(c) && !ctx.downloadedIds.has(c.id)
+    );
+    const allReady = g.length > 0 && g.every((id) => isReady(ctx.store.get(id)));
+    const alreadyDone = g.every((id) => ctx.downloadedIds.has(id));
+    if (alreadyDone) {
+      for (const id of g) covered.add(id);
+      continue;
+    }
+    if ((allReady || finalize) && usable.length > 0) {
+      assignGroupClips(usable, result);
+      for (const c of usable) covered.add(c.id);
+    }
+  }
+
+  // Fallback: brani pronti del run non coperti da nessun gruppo.
+  const rest = readyNotDownloaded(ctx, runStart).filter(
+    (c) => !covered.has(c.id)
+  );
+  if (rest.length > 0) pairByTitleTime(rest, result, finalize);
+
+  return result;
 }
 
 /** Scarica un MP3 usando la sessione autenticata del browser. */
@@ -280,99 +414,127 @@ async function downloadMp3(context, url, destPath) {
   fs.writeFileSync(destPath, buf);
 }
 
-/**
- * Smista i brani in A/B/C e scarica gli MP3.
- * Coppia = stesso titolo creati entro la tolleranza -> 1o in A, 2o in B.
- * Singolo (senza gemello) -> C.
- */
-async function sortAndDownload(context, project, clips) {
-  const tolMs = 120 * 1000;
-  const t = (c) => (c.createdAt ? Date.parse(c.createdAt) : 0) || 0;
-  const norm = (c) => String(c.title || "brano").trim().toLowerCase();
+// Nome file provvisorio (prima della riscrittura Claude).
+function sanitizeRaw(title) {
+  return (
+    String(title || "brano")
+      .replace(/[^a-z0-9\-_ ]/gi, "_")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 80) || "brano"
+  );
+}
 
-  // Dedup per id.
-  const byId = new Map();
-  for (const c of clips) byId.set(c.id, c);
-  const all = [...byId.values()];
-
-  // Raggruppa per titolo.
-  const groups = new Map();
-  for (const c of all) {
-    const k = norm(c);
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(c);
-  }
-
-  const assigned = []; // { clip, folder }
-  for (const arr of groups.values()) {
-    arr.sort((a, b) => t(a) - t(b));
-    let i = 0;
-    while (i < arr.length) {
-      if (i + 1 < arr.length && Math.abs(t(arr[i + 1]) - t(arr[i])) <= tolMs) {
-        assigned.push({ clip: arr[i], folder: "A" });
-        assigned.push({ clip: arr[i + 1], folder: "B" });
-        i += 2;
-      } else {
-        assigned.push({ clip: arr[i], folder: "C" });
-        i += 1;
-      }
-    }
-  }
-
+/** Scarica le assegnazioni e ritorna i record per il manifest. */
+async function downloadAssignments(context, project, assignments, ctx) {
   const tracks = [];
   let ok = 0;
   let fail = 0;
-  for (const { clip, folder } of assigned) {
+  for (const { clip, folder } of assignments) {
+    if (ctx.downloadedIds.has(clip.id)) continue;
     const fileName = `${sanitizeRaw(clip.title)}_${clip.id}.mp3`;
-    const rel = path.join(`cartella-${folder}`, fileName);
-    const dest = path.join(project.dirs.root, rel);
+    const rel = `cartella-${folder}/${fileName}`;
+    const dest = path.join(project.dirs.root, rel.split("/").join(path.sep));
+    const record = {
+      id: clip.id,
+      originalTitle: clip.title || "brano",
+      folder,
+      file: rel,
+      createdAt: clip.createdAt || null,
+    };
     if (fs.existsSync(dest)) {
-      tracks.push(trackRecord(clip, folder, rel));
+      ctx.downloadedIds.add(clip.id);
+      tracks.push(record);
       continue;
     }
     try {
       await downloadMp3(context, clip.audioUrl, dest);
+      ctx.downloadedIds.add(clip.id);
       ok += 1;
-      tracks.push(trackRecord(clip, folder, rel));
+      tracks.push(record);
       log.info(`[${project.nome}]   scaricato ${rel}`);
     } catch (e) {
       fail += 1;
       log.warn(`[${project.nome}]   download fallito ${clip.id}: ${e.message}`);
     }
   }
-  log.step(`[${project.nome}] download completati: ${ok}, falliti: ${fail}`);
+  if (ok || fail) {
+    log.info(`[${project.nome}]   lotto: scaricati ${ok}, falliti ${fail}`);
+  }
   return tracks;
 }
 
-function trackRecord(clip, folder, rel) {
-  return {
-    id: clip.id,
-    originalTitle: clip.title || "brano",
-    folder,
-    file: rel.split(path.sep).join("/"),
-    createdAt: clip.createdAt || null,
+/** Elabora un progetto: generazione a lotti + download progressivo. */
+async function processProject(context, page, project) {
+  ensureDirs(project);
+  const ctx = {
+    store: new Map(),
+    expectedIds: new Set(),
+    generations: [],
+    downloadedIds: new Set(),
   };
-}
+  const detach = attachClipCollector(context, ctx);
+  const runStart = Date.now();
+  const allTracks = [];
 
-// Nome file provvisorio (prima della riscrittura Claude): togli i caratteri
-// che romperebbero il filesystem, senza ancora l'ottimizzazione titoli.
-function sanitizeRaw(title) {
-  return String(title || "brano")
-    .replace(/[^a-z0-9\-_ ]/gi, "_")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 80) || "brano";
-}
-
-async function runLoginOnly(context, sunoUrl) {
-  const page = await context.newPage();
-  await page.goto(sunoUrl, { waitUntil: "domcontentloaded" });
   log.step(
-    "Finestra Suno aperta. Esegui il LOGIN a mano (Google/Discord/email). " +
-      "Quando hai finito e vedi la tua libreria, torna qui e premi INVIO."
+    `=== Progetto '${project.nome}' (account: ${project.sunoProfilo}): ` +
+      `${project.fabbisogno.clickTotali} generazioni a lotti di ` +
+      `${project.maxGenerazioniPerBatch}, obiettivo A=${project.fabbisogno.bisognoA} ` +
+      `B=${project.fabbisogno.bisognoB} ===`
   );
-  await waitForEnter();
-  log.info("Login salvato nel profilo persistente. Chiudo.");
+
+  try {
+    const queue = buildClickQueue(project);
+    const batchSize = project.maxGenerazioniPerBatch;
+    let batchNum = 0;
+    const totBatch = Math.ceil(queue.length / batchSize);
+
+    while (queue.length > 0) {
+      batchNum += 1;
+      const batch = queue.splice(0, batchSize);
+      log.step(
+        `[${project.nome}] lotto ${batchNum}/${totBatch}: ${batch.length} generazioni`
+      );
+
+      await launchBatch(page, project, batch);
+      await pollBatch(page, project, ctx, runStart, batch.length * 2);
+
+      const plan = planAssignments(ctx, runStart, false);
+      const tracks = await downloadAssignments(context, project, plan, ctx);
+      allTracks.push(...tracks);
+      log.info(
+        `[${project.nome}] lotto ${batchNum} completato. Totale scaricati finora: ${allTracks.length}`
+      );
+    }
+
+    // Passata finale: recupera eventuali brani rimasti indietro.
+    log.step(`[${project.nome}] passata finale per gli ultimi brani...`);
+    await pollBatch(page, project, ctx, runStart, 1);
+    const finalPlan = planAssignments(ctx, runStart, true);
+    const finalTracks = await downloadAssignments(context, project, finalPlan, ctx);
+    allTracks.push(...finalTracks);
+  } finally {
+    detach();
+  }
+
+  const manifest = {
+    project: project.nome,
+    sunoProfilo: project.sunoProfilo,
+    runAt: new Date().toISOString(),
+    keywordsTitoli: project.keywordsTitoli,
+    playlist: project.playlist,
+    tracks: allTracks,
+  };
+  manifestLib.save(project.dirs.manifest, manifest);
+  const counts = allTracks.reduce(
+    (a, t) => ((a[t.folder] = (a[t.folder] || 0) + 1), a),
+    {}
+  );
+  log.step(
+    `[${project.nome}] manifest salvato (${allTracks.length} brani: ` +
+      `A=${counts.A || 0} B=${counts.B || 0} C=${counts.C || 0})`
+  );
 }
 
 function waitForEnter() {
@@ -385,85 +547,76 @@ function waitForEnter() {
   });
 }
 
-async function main() {
-  const args = parseArgs(process.argv);
-  const cfg = loadConfig(args.config);
-  fs.mkdirSync(cfg.browserProfileDir, { recursive: true });
-
-  const context = await chromium.launchPersistentContext(cfg.browserProfileDir, {
+async function openContextForProfile(cfg, profile) {
+  const dir = path.join(cfg.browserProfilesDir, safeProfileDirName(profile));
+  fs.mkdirSync(dir, { recursive: true });
+  const context = await chromium.launchPersistentContext(dir, {
     headless: false,
     viewport: { width: 1400, height: 900 },
     acceptDownloads: true,
   });
+  const page = context.pages()[0] || (await context.newPage());
+  return { context, page };
+}
 
-  try {
-    if (args.loginOnly) {
-      await runLoginOnly(context, cfg.sunoUrl);
-      return;
-    }
+async function main() {
+  const args = parseArgs(process.argv);
+  const cfg = loadConfig(args.config);
+  fs.mkdirSync(cfg.browserProfilesDir, { recursive: true });
 
-    let progetti = cfg.progetti.filter((p) => p.attivo);
-    if (args.project) {
-      progetti = progetti.filter((p) => p.nome === args.project);
-      if (progetti.length === 0) {
-        throw new Error(`Progetto '${args.project}' non trovato o non attivo.`);
-      }
+  // --- Modalita solo login ---
+  if (args.loginOnly) {
+    const profile = args.profile || "default";
+    const { context, page } = await openContextForProfile(cfg, profile);
+    try {
+      await page.goto(cfg.sunoUrl, { waitUntil: "domcontentloaded" });
+      log.step(
+        `Profilo '${profile}': esegui il LOGIN a Suno a mano. ` +
+          "Quando vedi la tua libreria, torna qui e premi INVIO."
+      );
+      await waitForEnter();
+      log.info(`Login del profilo '${profile}' salvato.`);
+    } finally {
+      await context.close();
     }
+    return;
+  }
+
+  // --- Elaborazione progetti (raggruppati per account/profilo) ---
+  let progetti = cfg.progetti.filter((p) => p.attivo);
+  if (args.project) {
+    progetti = progetti.filter((p) => p.nome === args.project);
     if (progetti.length === 0) {
-      log.warn("Nessun progetto attivo da elaborare.");
-      return;
+      throw new Error(`Progetto '${args.project}' non trovato o non attivo.`);
     }
+  }
+  if (progetti.length === 0) {
+    log.warn("Nessun progetto attivo da elaborare.");
+    return;
+  }
 
-    const page = context.pages()[0] || (await context.newPage());
+  // Ordina per profilo cosi progetti dello stesso account restano vicini e
+  // riusano lo stesso browser senza riaprirlo.
+  progetti.sort((a, b) => a.sunoProfilo.localeCompare(b.sunoProfilo));
 
+  let current = null; // { profile, context, page }
+  try {
     for (const project of progetti) {
       project._sunoUrl = cfg.sunoUrl;
-      ensureDirs(project);
-      log.step(
-        `=== Progetto '${project.nome}': ${project.fabbisogno.clickTotali} generazioni, ` +
-          `obiettivo A=${project.fabbisogno.bisognoA} B=${project.fabbisogno.bisognoB} ===`
-      );
-
-      const store = new Map();
-      const expectedIds = new Set();
-      const detach = attachClipCollector(context, store, expectedIds);
-      const runStart = Date.now();
-
-      let tracks = [];
-      try {
-        await generateForProject(page, project);
-        const ready = await pollUntilReady(
-          page,
-          project,
-          store,
-          expectedIds,
-          runStart
+      if (!current || current.profile !== project.sunoProfilo) {
+        if (current) await current.context.close();
+        log.step(`Apro il browser per l'account Suno '${project.sunoProfilo}'.`);
+        const { context, page } = await openContextForProfile(
+          cfg,
+          project.sunoProfilo
         );
-        log.step(
-          `[${project.nome}] brani pronti da scaricare: ${ready.length} ` +
-            `(id di generazione intercettati: ${expectedIds.size})`
-        );
-
-        tracks = await sortAndDownload(context, project, ready);
-      } finally {
-        detach();
+        current = { profile: project.sunoProfilo, context, page };
       }
-
-      const manifest = {
-        project: project.nome,
-        runAt: new Date().toISOString(),
-        keywordsTitoli: project.keywordsTitoli,
-        playlist: project.playlist,
-        tracks,
-      };
-      manifestLib.save(project.dirs.manifest, manifest);
-      log.step(
-        `[${project.nome}] manifest salvato: ${project.dirs.manifest} (${tracks.length} brani)`
-      );
+      await processProject(current.context, current.page, project);
     }
     log.step("Fase generazione/download completata.");
   } finally {
-    await context.close();
+    if (current) await current.context.close();
   }
 }
 
@@ -474,4 +627,12 @@ if (require.main === module) {
   });
 }
 
-module.exports = { extractClips, sanitizeRaw };
+module.exports = {
+  extractClips,
+  extractClipObjects,
+  sanitizeRaw,
+  assignGroupClips,
+  pairByTitleTime,
+  planAssignments,
+  buildClickQueue,
+};
