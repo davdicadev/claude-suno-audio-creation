@@ -1,0 +1,23 @@
+{
+  "name": "suno-audio-automation",
+  "version": "1.0.0",
+  "description": "Automazione locale per generare brani su Suno AI (via Playwright), riscrivere i titoli con le API di Claude, montare playlist con FFMPEG e produrre le tracklist. Gestisce piu canali YouTube da un unico file di configurazione.",
+  "type": "commonjs",
+  "bin": {
+    "suno-audio": "src/run.js"
+  },
+  "scripts": {
+    "run": "node src/run.js",
+    "generate": "node src/suno.js",
+    "titles": "node src/rewrite-titles.js",
+    "playlists": "node src/build-playlists.js",
+    "login": "node src/suno.js --login-only"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "playwright": "^1.49.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

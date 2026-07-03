@@ -1,0 +1,19 @@
+# Dipendenze
+node_modules/
+
+# Config locale con i tuoi progetti (parti da config/projects.example.json)
+config/projects.json
+
+# Profilo browser persistente (contiene la sessione di login a Suno)
+browser-profile/
+**/browser-profile/
+
+# Output audio e file generati
+*.mp3
+export/
+tracklist/
+manifest.json
+
+# Log / temporanei
+*.log
+.DS_Store

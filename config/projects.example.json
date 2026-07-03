@@ -1,0 +1,50 @@
+{
+  "_commento": "Copia questo file in config/projects.json e adattalo. Ogni oggetto dentro 'progetti' e un canale YouTube indipendente. Vedi il README per la spiegazione di ogni campo.",
+
+  "baseDir": "C:\\n8n\\suno",
+  "ffmpegPath": "ffmpeg",
+  "ffprobePath": "ffprobe",
+
+  "sunoUrl": "https://suno.com",
+
+  "progetti": [
+    {
+      "nome": "canale-lofi",
+      "attivo": true,
+      "keywordsTitoli": ["lofi", "study beats", "relax", "chill", "focus"],
+      "prompts": [
+        {
+          "testo": "warm lofi hip hop, rainy night, soft piano, vinyl crackle",
+          "strumentale": true
+        },
+        {
+          "testo": "jazzy lofi, coffee shop vibes, mellow saxophone",
+          "strumentale": true
+        }
+      ],
+      "playlist": {
+        "daA": 2,
+        "daB": 2,
+        "braniPerPlaylist": 50
+      },
+      "margineGenerazione": 0.15
+    },
+    {
+      "nome": "canale-ambient",
+      "attivo": false,
+      "keywordsTitoli": ["ambient", "sleep", "deep relaxation", "meditation"],
+      "prompts": [
+        {
+          "testo": "deep ambient drone, calm, spacious pads, for sleep",
+          "strumentale": true
+        }
+      ],
+      "playlist": {
+        "daA": 1,
+        "daB": 1,
+        "braniPerPlaylist": 30
+      },
+      "margineGenerazione": 0.2
+    }
+  ]
+}

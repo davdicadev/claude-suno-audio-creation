@@ -1,0 +1,88 @@
+{
+  "name": "Suno Audio Automation",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "b0a1e2d3-0000-4000-8000-000000000001",
+      "name": "Avvia automazione",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "repoDir",
+              "value": "C:\\n8n\\suno-audio-automation",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "configPath",
+              "value": "C:\\n8n\\suno-audio-automation\\config\\projects.json",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b0a1e2d3-0000-4000-8000-000000000002",
+      "name": "Impostazioni",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "command": "=node \"{{ $('Impostazioni').item.json.repoDir }}/src/suno.js\" --config \"{{ $('Impostazioni').item.json.configPath }}\""
+      },
+      "id": "b0a1e2d3-0000-4000-8000-000000000003",
+      "name": "1 - Genera e scarica (Suno)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "command": "=node \"{{ $('Impostazioni').item.json.repoDir }}/src/rewrite-titles.js\" --config \"{{ $('Impostazioni').item.json.configPath }}\""
+      },
+      "id": "b0a1e2d3-0000-4000-8000-000000000004",
+      "name": "2 - Riscrivi titoli (Claude)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [660, 0]
+    },
+    {
+      "parameters": {
+        "command": "=node \"{{ $('Impostazioni').item.json.repoDir }}/src/build-playlists.js\" --config \"{{ $('Impostazioni').item.json.configPath }}\""
+      },
+      "id": "b0a1e2d3-0000-4000-8000-000000000005",
+      "name": "3 - Monta playlist + tracklist (FFMPEG)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [880, 0]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Avvia automazione": {
+      "main": [[{ "node": "Impostazioni", "type": "main", "index": 0 }]]
+    },
+    "Impostazioni": {
+      "main": [[{ "node": "1 - Genera e scarica (Suno)", "type": "main", "index": 0 }]]
+    },
+    "1 - Genera e scarica (Suno)": {
+      "main": [[{ "node": "2 - Riscrivi titoli (Claude)", "type": "main", "index": 0 }]]
+    },
+    "2 - Riscrivi titoli (Claude)": {
+      "main": [[{ "node": "3 - Monta playlist + tracklist (FFMPEG)", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "meta": {},
+  "tags": []
+}
