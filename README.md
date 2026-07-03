@@ -86,6 +86,10 @@ echo $env:ANTHROPIC_API_KEY
 
 ## 3. Primo login a Suno (una volta sola per account)
 
+> Tutti i comandi `node src/...` vanno eseguiti **dalla cartella del progetto** (dove c'è `package.json`).
+
+> **Prima del login crea il file di configurazione** (il login lo legge per sapere dove salvare la sessione): `cp config/projects.example.json config/projects.json` (Windows: `copy config\projects.example.json config\projects.json`).
+
 Usiamo un **profilo browser persistente**: fai il login a mano una volta, poi l'automazione riusa la sessione.
 
 ```bash

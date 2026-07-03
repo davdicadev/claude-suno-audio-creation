@@ -39,6 +39,15 @@ cd suno-audio-automation
 
 ## Passo 2 — Installa le dipendenze e il browser
 
+> ⚠️ **REGOLA D'ORO — vale per TUTTI i comandi `npm ...` e `node src/...`**
+> Vanno eseguiti **dentro la cartella del progetto**. Ogni volta che apri un
+> nuovo PowerShell, il **primo** comando da dare è sempre:
+> ```powershell
+> cd C:\n8n\suno-audio-automation
+> ```
+> Se compare un errore tipo `Cannot find module 'C:\Users\david\src\suno.js'`,
+> vuol dire che sei nella cartella sbagliata: torna qui con il `cd` qui sopra.
+
 ```powershell
 npm install
 npx playwright install chromium
@@ -70,6 +79,14 @@ echo $env:ANTHROPIC_API_KEY
 
 ## Passo 4 — Login a Suno (una volta per account)
 
+**Prima crea il file di configurazione** (il login lo legge per sapere dove salvare la sessione). Basta copiare l'esempio, per ora va bene così com'è:
+
+```powershell
+copy config\projects.example.json config\projects.json
+```
+
+Poi lancia il login (ricorda: sempre dalla cartella `C:\n8n\suno-audio-automation`):
+
 ```powershell
 node src/suno.js --login-only
 ```
@@ -90,8 +107,9 @@ node src/suno.js --login-only --profile account-2
 
 ## Passo 5 — Configura i tuoi progetti
 
+Il file `config\projects.json` l'hai già creato nel Passo 4. Adesso personalizzalo con i tuoi prompt e numeri:
+
 ```powershell
-copy config\projects.example.json config\projects.json
 notepad config\projects.json
 ```
 
@@ -198,6 +216,8 @@ C:\n8n\suno\
 
 | Sintomo | Soluzione |
 |---|---|
+| `Cannot find module '...\src\suno.js'` | Sei nella cartella sbagliata. Fai `cd C:\n8n\suno-audio-automation` e riprova. |
+| `File di configurazione non trovato ...config\projects.json` | Crealo con `copy config\projects.example.json config\projects.json`. |
 | `ANTHROPIC_API_KEY` non trovata | Hai fatto `setx` ma non hai riaperto il terminale. Chiudi e riapri PowerShell. |
 | `ffmpeg`/`ffprobe` non riconosciuti | Installa con `scoop install ffmpeg`, oppure metti in `projects.json` il percorso completo agli `.exe`. |
 | Il browser non parte / errore Playwright | Riesegui `npx playwright install chromium`. |
