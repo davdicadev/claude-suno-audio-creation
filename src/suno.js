@@ -236,28 +236,57 @@ function buildClickQueue(project) {
   return q;
 }
 
+// Legge lo stato del toggle Instrumental: true (attivo), false (spento), null (ignoto).
+async function readInstrumentalState(toggle) {
+  try {
+    const pressed = await toggle.getAttribute("aria-pressed");
+    if (pressed != null) return pressed === "true";
+    const checked = await toggle.getAttribute("aria-checked");
+    if (checked != null) return checked === "true";
+    const dataState = await toggle.getAttribute("data-state");
+    if (dataState) return /on|checked|active|selected|true/i.test(dataState);
+    const cls = (await toggle.getAttribute("class")) || "";
+    if (/(active|selected|checked|\bon\b|enabled)/i.test(cls)) return true;
+  } catch (_) {
+    /* non leggibile */
+  }
+  return null;
+}
+
 async function setInstrumental(page, wanted) {
   const toggle = await firstLocator(page, SEL.instrumentalToggle, 2500);
   if (!toggle) {
     log.warn(
-      "Toggle 'Instrumental' non trovato: procedo senza modificarlo. " +
-        "Se serve, aggiorna 'instrumentalToggle' in src/lib/suno-selectors.js"
+      `Toggle 'Instrumental' NON trovato: non posso impostarlo su ${
+        wanted ? "strumentale" : "cantato"
+      }. VERIFICA a mano sulla pagina Suno. Se serve aggiorna 'instrumentalToggle' in src/lib/suno-selectors.js`
     );
     return;
   }
-  let isOn = null;
-  try {
-    const pressed = await toggle.getAttribute("aria-pressed");
-    const checked = await toggle.getAttribute("aria-checked");
-    if (pressed != null) isOn = pressed === "true";
-    else if (checked != null) isOn = checked === "true";
-  } catch (_) {
-    /* stato non leggibile */
+  const isOn = await readInstrumentalState(toggle);
+  if (isOn === null) {
+    log.warn(
+      `Toggle 'Instrumental' trovato ma stato NON leggibile. Lo imposto su ` +
+        `${wanted ? "ON (strumentale)" : "OFF (cantato)"} cliccando una volta; ` +
+        "controlla il primo brano per conferma."
+    );
+  } else {
+    log.info(
+      `Toggle 'Instrumental' attuale: ${isOn ? "ON" : "OFF"}, voluto: ${
+        wanted ? "ON" : "OFF"
+      }`
+    );
   }
-  if (isOn === null || isOn !== wanted) {
+  if (isOn !== wanted) {
     try {
       await toggle.click();
       await page.waitForTimeout(300);
+      const after = await readInstrumentalState(toggle);
+      if (after !== null && after !== wanted) {
+        // ha girato dalla parte sbagliata: riprova una volta
+        await toggle.click();
+        await page.waitForTimeout(300);
+      }
     } catch (_) {
       log.warn("Non sono riuscito a cliccare il toggle strumentale.");
     }

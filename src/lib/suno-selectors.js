@@ -26,12 +26,14 @@ module.exports = {
     "textarea",
   ],
 
-  // Toggle "Instrumental" (strumentale).
+  // Toggle "Instrumental" (strumentale). Su Suno e' un bottone con il testo
+  // "Instrumental" e un pallino che si accende quando e' attivo.
   instrumentalToggle: [
     'button[aria-label*="instrumental" i]',
     'input[type="checkbox"][name*="instrumental" i]',
-    'label:has-text("Instrumental")',
+    'button:has-text("Instrumental")',
     'div[role="switch"]:near(:text("Instrumental"))',
+    'label:has-text("Instrumental")',
   ],
 
   // Bottone che avvia la generazione.
