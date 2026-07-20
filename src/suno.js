@@ -138,6 +138,22 @@ function extractClips(node, out, seen) {
  *  - dai FEED aggiorna stato/audio_url dei brani in `store`.
  * Ritorna una funzione per staccare il listener.
  */
+// Unisce i clip trovati nello store (e registra le coppie di generazione).
+function mergeFound(ctx, found, isGen) {
+  for (const c of found) {
+    const prev = ctx.store.get(c.id);
+    // l'ultima versione vince, ma non azzerare audioUrl gia noto
+    const merged = prev ? { ...prev, ...c } : c;
+    if (prev && prev.audioUrl && !c.audioUrl) merged.audioUrl = prev.audioUrl;
+    ctx.store.set(c.id, merged);
+  }
+  if (isGen && found.length) {
+    const ids = found.map((c) => c.id);
+    ctx.generations.push(ids);
+    for (const id of ids) ctx.expectedIds.add(id);
+  }
+}
+
 function attachClipCollector(context, ctx) {
   const handler = async (resp) => {
     const url = resp.url();
@@ -153,22 +169,34 @@ function attachClipCollector(context, ctx) {
     const found = [];
     extractClipObjects(json, found, new Set());
     if (found.length === 0) return;
-
-    for (const c of found) {
-      const prev = ctx.store.get(c.id);
-      // l'ultima versione vince, ma non azzerare audioUrl gia noto
-      const merged = prev ? { ...prev, ...c } : c;
-      if (prev && prev.audioUrl && !c.audioUrl) merged.audioUrl = prev.audioUrl;
-      ctx.store.set(c.id, merged);
-    }
-    if (isGen) {
-      const ids = found.map((c) => c.id);
-      ctx.generations.push(ids);
-      for (const id of ids) ctx.expectedIds.add(id);
-    }
+    // Ricorda l'ultimo URL del feed: lo rifaremo in background (senza ricaricare
+    // la pagina) per aggiornare lo stato dei brani.
+    if (isFeed) ctx.lastFeedUrl = url;
+    mergeFound(ctx, found, isGen);
   };
   context.on("response", handler);
   return () => context.off("response", handler);
+}
+
+/**
+ * Aggiorna lo stato dei brani SENZA ricaricare la pagina visibile: rifà in
+ * sottofondo l'ultima chiamata al feed usando la sessione autenticata. Cosi
+ * eventuali captcha sulla pagina restano intatti e risolvibili.
+ * @returns {boolean} true se ha ottenuto dati dal feed
+ */
+async function refreshFeed(context, ctx) {
+  if (!ctx.lastFeedUrl) return false;
+  try {
+    const resp = await context.request.get(ctx.lastFeedUrl, { timeout: 30000 });
+    if (!resp.ok()) return false;
+    const json = await resp.json();
+    const found = [];
+    extractClipObjects(json, found, new Set());
+    mergeFound(ctx, found, false);
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 /** Limita i brani a quelli di QUESTA esecuzione (id di generazione o tempo). */
@@ -280,9 +308,9 @@ function readyNotDownloaded(ctx, runStart) {
   );
 }
 
-/** Attende il completamento di un lotto (o timeout), ricaricando la libreria. */
+/** Attende il completamento di un lotto (o timeout), SENZA ricaricare la pagina. */
 async function pollBatch(page, project, ctx, runStart, expectedNew, opts = {}) {
-  const base = project._sunoUrl;
+  const context = page.context();
   const maxMs = opts.maxMs || SEL.timeouts.pollMaxPerBatch;
   const allowZeroStable = opts.allowZeroStable === true;
   const start = Date.now();
@@ -291,18 +319,13 @@ async function pollBatch(page, project, ctx, runStart, expectedNew, opts = {}) {
 
   log.step(
     `[${project.nome}]   attendo che Suno finisca di generare (~${expectedNew} brani attesi). ` +
-      "La pagina si ricarica ogni ~15s per controllare: e' NORMALE, non chiudere il browser."
+      "Controllo lo stato in sottofondo, senza ricaricare la pagina: se compare " +
+      "un captcha, risolvilo con calma."
   );
 
   while (Date.now() - start < maxMs) {
-    try {
-      await page.goto(base + SEL.createUrl, {
-        waitUntil: "domcontentloaded",
-        timeout: SEL.timeouts.navigation,
-      });
-    } catch (_) {
-      /* riprova */
-    }
+    // Aggiorna lo stato in background (non tocca la pagina visibile).
+    await refreshFeed(context, ctx);
     await page.waitForTimeout(4000);
 
     const count = readyNotDownloaded(ctx, runStart).length;
