@@ -281,8 +281,10 @@ function readyNotDownloaded(ctx, runStart) {
 }
 
 /** Attende il completamento di un lotto (o timeout), ricaricando la libreria. */
-async function pollBatch(page, project, ctx, runStart, expectedNew) {
+async function pollBatch(page, project, ctx, runStart, expectedNew, opts = {}) {
   const base = project._sunoUrl;
+  const maxMs = opts.maxMs || SEL.timeouts.pollMaxPerBatch;
+  const allowZeroStable = opts.allowZeroStable === true;
   const start = Date.now();
   let last = -1;
   let stable = 0;
@@ -291,7 +293,7 @@ async function pollBatch(page, project, ctx, runStart, expectedNew) {
     `[${project.nome}]   attendo il completamento del lotto (~${expectedNew} brani attesi)`
   );
 
-  while (Date.now() - start < SEL.timeouts.pollMaxPerBatch) {
+  while (Date.now() - start < maxMs) {
     try {
       await page.goto(base + SEL.createUrl, {
         waitUntil: "domcontentloaded",
@@ -311,8 +313,10 @@ async function pollBatch(page, project, ctx, runStart, expectedNew) {
     if (count >= expectedNew) break;
     if (count === last) {
       stable += 1;
-      if (stable >= 3 && count > 0) {
-        log.info(`[${project.nome}]   conteggio stabile, procedo col download.`);
+      // Esci se il conteggio non cambia da un po'. Nella passata finale
+      // (allowZeroStable) esci anche se il conteggio e' 0 (nulla da aspettare).
+      if (stable >= 3 && (count > 0 || allowZeroStable)) {
+        log.info(`[${project.nome}]   niente di nuovo, procedo.`);
         break;
       }
     } else {
@@ -508,9 +512,23 @@ async function processProject(context, page, project) {
       );
     }
 
-    // Passata finale: recupera eventuali brani rimasti indietro.
-    log.step(`[${project.nome}] passata finale per gli ultimi brani...`);
-    await pollBatch(page, project, ctx, runStart, 1);
+    // Passata finale: solo se restano brani generati ma non ancora scaricati.
+    const pendenti = [...ctx.expectedIds].filter(
+      (id) => !ctx.downloadedIds.has(id)
+    );
+    const nonCoperti = readyNotDownloaded(ctx, runStart).length;
+    if (pendenti.length === 0 && nonCoperti === 0) {
+      log.step(`[${project.nome}] tutti i brani scaricati, nessuna attesa finale.`);
+    } else {
+      log.step(
+        `[${project.nome}] passata finale (${pendenti.length} brani ancora in corso)...`
+      );
+      // attesa breve e con uscita anche a conteggio zero, per non bloccarsi
+      await pollBatch(page, project, ctx, runStart, pendenti.length || 1, {
+        maxMs: 3 * 60 * 1000,
+        allowZeroStable: true,
+      });
+    }
     const finalPlan = planAssignments(ctx, runStart, true);
     const finalTracks = await downloadAssignments(context, project, finalPlan, ctx);
     allTracks.push(...finalTracks);
