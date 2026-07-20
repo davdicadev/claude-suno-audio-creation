@@ -290,7 +290,8 @@ async function pollBatch(page, project, ctx, runStart, expectedNew, opts = {}) {
   let stable = 0;
 
   log.step(
-    `[${project.nome}]   attendo il completamento del lotto (~${expectedNew} brani attesi)`
+    `[${project.nome}]   attendo che Suno finisca di generare (~${expectedNew} brani attesi). ` +
+      "La pagina si ricarica ogni ~15s per controllare: e' NORMALE, non chiudere il browser."
   );
 
   while (Date.now() - start < maxMs) {
@@ -664,13 +665,36 @@ async function main() {
     }
     log.step("Fase generazione/download completata.");
   } finally {
-    if (current) await current.context.close();
+    if (current) {
+      try {
+        await current.context.close();
+      } catch (_) {
+        /* il browser potrebbe essere gia stato chiuso */
+      }
+    }
   }
+}
+
+function isBrowserClosedError(e) {
+  const m = String((e && e.message) || e);
+  return (
+    m.includes("has been closed") ||
+    m.includes("Target closed") ||
+    m.includes("Target page, context or browser has been closed")
+  );
 }
 
 if (require.main === module) {
   main().catch((e) => {
-    log.error(e && e.stack ? e.stack : e);
+    if (isBrowserClosedError(e)) {
+      log.error(
+        "Il browser e' stato chiuso prima della fine. Non chiudere la finestra " +
+          "mentre l'automazione lavora: durante l'attesa la pagina si ricarica " +
+          "da sola, e' normale. Rilancia con 'node src/suno.js'."
+      );
+    } else {
+      log.error(e && e.stack ? e.stack : e);
+    }
     process.exit(1);
   });
 }
