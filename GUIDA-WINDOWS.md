@@ -4,6 +4,25 @@ Questa guida ti porta dal PC "vuoto" alla prima automazione funzionante. Comandi
 
 ---
 
+## Uso quotidiano (dopo il primo setup)
+
+Una volta completato il setup, **non** devi rifare installazione, chiave Claude o login Suno: restano salvati anche dopo lo spegnimento. Per far partire l'automazione bastano poche righe:
+
+```powershell
+cd C:\n8n\suno-audio-automation     # 1. entra nella cartella del progetto (sempre)
+git pull                            # 2. (consigliato) scarica gli aggiornamenti
+notepad config\projects.json        # 3. (solo se vuoi cambiare prompt/numeri)
+node src/run.js                     # 4. avvia tutto (generazione -> titoli -> playlist)
+```
+
+Varianti del passo 4:
+- `node src/suno.js` — solo generazione + download in A/B/C
+- `node src/run.js --phase titles,playlists` — riscrittura titoli + montaggio (se i brani sono già scaricati)
+
+Lascia il browser aperto mentre lavora. Il resto della guida serve solo per il **primo** setup.
+
+---
+
 ## Passo 0 — Cosa serve (una volta sola)
 
 Apri PowerShell e verifica cosa hai già:
