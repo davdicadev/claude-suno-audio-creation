@@ -264,19 +264,25 @@ async function setInstrumental(page, wanted) {
     return;
   }
   const isOn = await readInstrumentalState(toggle);
+
+  // Se non riusciamo a leggere lo stato, NON clicchiamo: cliccare "alla cieca"
+  // rischia di accendere lo strumentale sui brani cantati. Lo lasciamo com'e'
+  // (su Suno il default e' spento) e avvisiamo di impostarlo a mano una volta.
   if (isOn === null) {
     log.warn(
-      `Toggle 'Instrumental' trovato ma stato NON leggibile. Lo imposto su ` +
-        `${wanted ? "ON (strumentale)" : "OFF (cantato)"} cliccando una volta; ` +
-        "controlla il primo brano per conferma."
+      `Toggle 'Instrumental' trovato ma stato NON leggibile: NON lo tocco per ` +
+        "non rischiare di sbagliare. Imposta 'Instrumental' a mano una volta su " +
+        `Suno (${wanted ? "ACCESO per strumentale" : "SPENTO per cantato"}): ` +
+        "Suno ricorda l'impostazione. (Per automatizzarlo mandami l'HTML del bottone.)"
     );
-  } else {
-    log.info(
-      `Toggle 'Instrumental' attuale: ${isOn ? "ON" : "OFF"}, voluto: ${
-        wanted ? "ON" : "OFF"
-      }`
-    );
+    return;
   }
+
+  log.info(
+    `Toggle 'Instrumental' attuale: ${isOn ? "ON" : "OFF"}, voluto: ${
+      wanted ? "ON" : "OFF"
+    }`
+  );
   if (isOn !== wanted) {
     try {
       await toggle.click();
