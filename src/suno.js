@@ -299,32 +299,86 @@ async function setInstrumental(page, wanted) {
   }
 }
 
+// Salva uno screenshot della pagina per capire cosa c'era in caso di errore.
+async function saveDebugShot(page, project, nome) {
+  try {
+    const file = path.join(project.dirs.root, `errore-${nome}.png`);
+    fs.mkdirSync(project.dirs.root, { recursive: true });
+    await page.screenshot({ path: file, fullPage: true });
+    log.warn(`[${project.nome}] salvato screenshot della pagina: ${file}`);
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+/**
+ * Assicura che la pagina di creazione sia caricata e che il campo prompt sia
+ * presente, con piu' tentativi (ricaricando). Utile quando Suno e' lento o
+ * mostra un captcha da risolvere.
+ */
+async function ensureCreatePage(page, project) {
+  const base = project._sunoUrl;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      await page.goto(base + SEL.createUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: SEL.timeouts.navigation,
+      });
+    } catch (_) {
+      /* riprova */
+    }
+    await page.waitForTimeout(3000);
+    // aspetta il campo prompt con pazienza crescente
+    const textarea = await firstLocator(page, SEL.promptTextarea, 8000);
+    if (textarea) return textarea;
+
+    log.warn(
+      `[${project.nome}] campo prompt non ancora presente (tentativo ${attempt}/4). ` +
+        "Se sulla pagina c'e' un captcha o un login, risolvilo: riprovo tra poco."
+    );
+    await page.waitForTimeout(SEL.timeouts.pollInterval);
+  }
+  await saveDebugShot(page, project, "pagina-creazione");
+  throw new Error(
+    `[${project.nome}] campo prompt non trovato dopo piu' tentativi. ` +
+      "Controlla lo screenshot 'errore-pagina-creazione.png' nella cartella del progetto: " +
+      "probabilmente la pagina non era la Create (login/captcha) o un altro browser " +
+      "sta usando lo stesso profilo. Se il layout e' cambiato, aggiorna " +
+      "'promptTextarea' in src/lib/suno-selectors.js"
+  );
+}
+
 /** Lancia un lotto di generazioni (senza attendere il completamento). */
 async function launchBatch(page, project, batch) {
-  const base = project._sunoUrl;
-  await page.goto(base + SEL.createUrl, {
-    waitUntil: "domcontentloaded",
-    timeout: SEL.timeouts.navigation,
-  });
-  await page.waitForTimeout(1500);
+  // Carica la pagina Create e ottieni il campo prompt (con tentativi).
+  await ensureCreatePage(page, project);
 
   for (let i = 0; i < batch.length; i++) {
     const click = batch[i];
     await setInstrumental(page, click.strumentale);
 
-    const textarea = await firstLocator(page, SEL.promptTextarea);
+    const textarea = await firstLocator(page, SEL.promptTextarea, 8000);
     if (!textarea) {
+      // la pagina potrebbe essersi ricaricata: riprova a garantirla
+      await ensureCreatePage(page, project);
+    }
+    const field = (await firstLocator(page, SEL.promptTextarea, 8000)) || null;
+    if (!field) {
+      await saveDebugShot(page, project, "campo-prompt");
       throw new Error(
-        `[${project.nome}] campo prompt non trovato. Aggiorna 'promptTextarea' in src/lib/suno-selectors.js`
+        `[${project.nome}] campo prompt non trovato. Vedi 'errore-campo-prompt.png' ` +
+          "e, se il layout e' cambiato, aggiorna 'promptTextarea' in src/lib/suno-selectors.js"
       );
     }
-    await textarea.fill(click.testo);
+    await field.fill(click.testo);
     await page.waitForTimeout(300);
 
-    const createBtn = await firstLocator(page, SEL.createButton);
+    const createBtn = await firstLocator(page, SEL.createButton, 8000);
     if (!createBtn) {
+      await saveDebugShot(page, project, "bottone-create");
       throw new Error(
-        `[${project.nome}] bottone Create non trovato. Aggiorna 'createButton' in src/lib/suno-selectors.js`
+        `[${project.nome}] bottone Create non trovato. Vedi 'errore-bottone-create.png' ` +
+          "e, se serve, aggiorna 'createButton' in src/lib/suno-selectors.js"
       );
     }
     await createBtn.click();
