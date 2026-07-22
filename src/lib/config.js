@@ -51,6 +51,16 @@ function loadConfig(configPath) {
     browserProfilesDir:
       raw.browserProfilesDir || path.join(raw.baseDir, "browser-profiles"),
     maxGenerazioniPerBatch: maxBatchGlobal,
+    // Montaggio: di default ricodifica per avere tempi ESATTI (gli MP3 di Suno
+    // hanno header di durata imprecisi che sfasano la tracklist). montaggioVeloce
+    // usa la copia diretta (istantanea ma con tempi imprecisi).
+    montaggioVeloce: raw.montaggioVeloce === true,
+    // Taglio del silenzio in eccesso a inizio/fine di ogni brano.
+    tagliaSilenzio: raw.tagliaSilenzio !== false, // default true
+    maxSilenzioSecondi:
+      typeof raw.maxSilenzioSecondi === "number" ? raw.maxSilenzioSecondi : 3,
+    sogliaSilenzioDb:
+      typeof raw.sogliaSilenzioDb === "number" ? raw.sogliaSilenzioDb : -50,
     configPath: p,
     progetti: raw.progetti.map((pr, i) =>
       normalizeProject(pr, i, raw.baseDir, maxBatchGlobal)

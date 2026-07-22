@@ -133,53 +133,168 @@ function formatTime(seconds) {
   return h > 0 ? `${pad(h)}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
 }
 
-/** Monta una playlist in un MP3 unico con il concat demuxer di FFMPEG. */
-function concatPlaylist(ffmpeg, brani, outFile, reencode) {
-  const listFile = outFile + ".txt";
-  const lines = brani.map((t) => {
-    // Il concat demuxer vuole path con forward-slash; i nostri nomi sono ASCII
-    // sicuri (nessun apostrofo), quindi niente escaping complicato.
-    const p = t.abs.split(path.sep).join("/").replace(/'/g, "'\\''");
-    return `file '${p}'`;
-  });
-  fs.writeFileSync(listFile, lines.join("\n") + "\n", "utf8");
+/**
+ * Analizza un brano decodificandolo: durata REALE (gli header MP3 di Suno sono
+ * imprecisi) + silenzio a inizio/fine.
+ * @returns {{real:number, leading:number, trailingStart:(number|null)}}
+ */
+function analyzeTrack(cfg, file) {
+  const r = spawnSync(
+    cfg.ffmpegPath,
+    [
+      "-hide_banner",
+      "-i",
+      file,
+      "-af",
+      `silencedetect=noise=${cfg.sogliaSilenzioDb}dB:d=0.5`,
+      "-f",
+      "null",
+      "-",
+    ],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }
+  );
+  const err = String(r.stderr || "");
 
-  const codecArgs = reencode
-    ? ["-c:a", "libmp3lame", "-b:a", "192k"]
-    : ["-c", "copy"];
+  // durata reale = ultimo "time=HH:MM:SS.ss" stampato dalla decodifica
+  let real = 0;
+  const tre = /time=(\d+):(\d+):(\d+(?:\.\d+)?)/g;
+  let tm;
+  let lastT = null;
+  while ((tm = tre.exec(err))) lastT = tm;
+  if (lastT) {
+    real = Number(lastT[1]) * 3600 + Number(lastT[2]) * 60 + parseFloat(lastT[3]);
+  }
+  if (!real) real = runFfprobeDuration(cfg.ffprobePath, file); // fallback header
+
+  // eventi di silenzio, in ordine
+  const events = [];
+  const sre = /silence_(start|end):\s*(-?[0-9.]+)/g;
+  let sm;
+  while ((sm = sre.exec(err))) events.push({ type: sm[1], t: parseFloat(sm[2]) });
+
+  let leading = 0;
+  if (events.length && events[0].type === "start" && events[0].t < 0.5) {
+    const end = events.find((e, i) => i > 0 && e.type === "end");
+    leading = end ? end.t : real; // se non trova la fine, il file e' tutto silenzio
+  }
+
+  let trailingStart = null;
+  const last = events[events.length - 1];
+  if (last) {
+    if (last.type === "start") {
+      trailingStart = last.t; // silenzio che arriva fino a fine file
+    } else if (last.type === "end" && real && Math.abs(last.t - real) < 1.0) {
+      for (let i = events.length - 1; i >= 0; i--) {
+        if (events[i].type === "start") {
+          trailingStart = events[i].t;
+          break;
+        }
+      }
+    }
+  }
+  return { real, leading, trailingStart };
+}
+
+/** Calcola i punti di taglio (inizio/fine) per lasciare max N secondi di silenzio. */
+function computeCuts(cfg, a) {
+  let startCut = 0;
+  let endCut = a.real;
+  if (cfg.tagliaSilenzio) {
+    if (a.leading > cfg.maxSilenzioSecondi) {
+      startCut = a.leading - cfg.maxSilenzioSecondi;
+    }
+    if (a.trailingStart != null) {
+      const trailing = a.real - a.trailingStart;
+      if (trailing > cfg.maxSilenzioSecondi) {
+        endCut = a.trailingStart + cfg.maxSilenzioSecondi;
+      }
+    }
+  }
+  if (endCut > a.real) endCut = a.real;
+  if (startCut < 0) startCut = 0;
+  // sicurezza: se il taglio azzererebbe il brano, tieni tutto
+  if (endCut - startCut < 0.5) {
+    startCut = 0;
+    endCut = a.real;
+  }
+  return { startCut, endCut, dur: endCut - startCut };
+}
+
+/**
+ * Monta i segmenti (con inpoint/outpoint) RICODIFICANDO: cosi i tempi sono
+ * esatti e il silenzio in eccesso viene tagliato in un unico passaggio.
+ */
+function concatAccurate(cfg, segments, outFile) {
+  const listFile = outFile + ".txt";
+  const lines = [];
+  for (const s of segments) {
+    const p = s.abs.split(path.sep).join("/").replace(/'/g, "'\\''");
+    lines.push(`file '${p}'`);
+    lines.push(`inpoint ${s.startCut.toFixed(3)}`);
+    lines.push(`outpoint ${s.endCut.toFixed(3)}`);
+  }
+  fs.writeFileSync(listFile, lines.join("\n") + "\n", "utf8");
   const args = [
     "-y",
+    "-hide_banner",
+    "-loglevel",
+    "error",
     "-f",
     "concat",
     "-safe",
     "0",
     "-i",
     listFile,
-    ...codecArgs,
+    "-c:a",
+    "libmp3lame",
+    "-b:a",
+    "192k",
     outFile,
   ];
-  const r = spawnSync(ffmpeg, args, { encoding: "utf8" });
+  const r = spawnSync(cfg.ffmpegPath, args, { encoding: "utf8" });
   try {
     fs.unlinkSync(listFile);
   } catch (_) {}
   if (r.status !== 0) {
     throw new Error(
-      `FFMPEG ha fallito (${outFile}). ` +
-        (reencode ? "" : "Riprova con --reencode. ") +
-        `stderr: ${String(r.stderr || "").slice(-500)}`
+      `FFMPEG concat fallito (${outFile}): ${String(r.stderr || "").slice(-400)}`
     );
   }
 }
 
-function writeTracklist(ffprobe, brani, outFile, totaleLabel) {
+/** Montaggio veloce (copia diretta, tempi imprecisi) - solo se richiesto. */
+function concatFast(cfg, brani, outFile) {
+  const listFile = outFile + ".txt";
+  const lines = brani.map((t) => {
+    const p = t.abs.split(path.sep).join("/").replace(/'/g, "'\\''");
+    return `file '${p}'`;
+  });
+  fs.writeFileSync(listFile, lines.join("\n") + "\n", "utf8");
+  const r = spawnSync(
+    cfg.ffmpegPath,
+    ["-y", "-f", "concat", "-safe", "0", "-i", listFile, "-c", "copy", outFile],
+    { encoding: "utf8" }
+  );
+  try {
+    fs.unlinkSync(listFile);
+  } catch (_) {}
+  if (r.status !== 0) {
+    throw new Error(
+      `FFMPEG (veloce) fallito (${outFile}): ${String(r.stderr || "").slice(-400)}`
+    );
+  }
+}
+
+/** Scrive la tracklist usando le durate (gia' tagliate) dei segmenti. */
+function writeTracklist(segments, outFile, totaleLabel) {
   let cursor = 0;
   const righe = [];
-  for (const t of brani) {
-    righe.push(`${formatTime(cursor)} - ${t.display}`);
-    cursor += runFfprobeDuration(ffprobe, t.abs) || 0;
+  for (const s of segments) {
+    righe.push(`${formatTime(cursor)} - ${s.display}`);
+    cursor += s.dur || 0;
   }
   const header = totaleLabel
-    ? `# ${totaleLabel}  (durata totale ${formatTime(cursor)}, ${brani.length} brani)\n\n`
+    ? `# ${totaleLabel}  (durata totale ${formatTime(cursor)}, ${segments.length} brani)\n\n`
     : "";
   fs.writeFileSync(outFile, header + righe.join("\n") + "\n", "utf8");
 }
@@ -215,6 +330,8 @@ function processProject(cfg, project, reencode) {
   playlistsA.forEach((brani, i) => jobs.push({ name: `playlist_A_${i + 1}`, brani }));
   playlistsB.forEach((brani, i) => jobs.push({ name: `playlist_B_${i + 1}`, brani }));
 
+  const veloce = cfg.montaggioVeloce && !reencode;
+
   for (const job of jobs) {
     if (job.brani.length === 0) {
       log.warn(`[${project.nome}] ${job.name}: nessun brano, salto.`);
@@ -222,9 +339,42 @@ function processProject(cfg, project, reencode) {
     }
     const mp3 = path.join(project.dirs.export, `${job.name}.mp3`);
     const txt = path.join(project.dirs.tracklist, `${job.name}.txt`);
-    log.info(`[${project.nome}] monto ${job.name} (${job.brani.length} brani)`);
-    concatPlaylist(cfg.ffmpegPath, job.brani, mp3, reencode);
-    writeTracklist(cfg.ffprobePath, job.brani, txt, job.name);
+
+    if (veloce) {
+      log.info(
+        `[${project.nome}] monto ${job.name} (${job.brani.length} brani, modalita' veloce)`
+      );
+      const segs = job.brani.map((t) => ({
+        display: t.display,
+        dur: runFfprobeDuration(cfg.ffprobePath, t.abs) || 0,
+      }));
+      concatFast(cfg, job.brani, mp3);
+      writeTracklist(segs, txt, job.name);
+    } else {
+      log.info(
+        `[${project.nome}] monto ${job.name} (${job.brani.length} brani): ` +
+          "analizzo durate e silenzio..."
+      );
+      const segments = [];
+      let tagliati = 0;
+      for (const t of job.brani) {
+        const a = analyzeTrack(cfg, t.abs);
+        const cuts = computeCuts(cfg, a);
+        if (cuts.startCut > 0.05 || cuts.endCut < a.real - 0.05) tagliati += 1;
+        segments.push({
+          abs: t.abs,
+          display: t.display,
+          startCut: cuts.startCut,
+          endCut: cuts.endCut,
+          dur: cuts.dur,
+        });
+      }
+      log.info(
+        `[${project.nome}]   ${job.name}: silenzio tagliato in ${tagliati}/${segments.length} brani. Ricodifico...`
+      );
+      concatAccurate(cfg, segments, mp3);
+      writeTracklist(segments, txt, job.name);
+    }
     log.info(`[${project.nome}]   -> ${mp3}`);
     log.info(`[${project.nome}]   -> ${txt}`);
   }
