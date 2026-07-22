@@ -10,6 +10,12 @@ Automazione **locale** che, partendo da prompt per Suno AI:
 
 Gestisce **più canali YouTube** da un **unico file di configurazione**: con un solo avvio produce la parte audio di tutti i progetti.
 
+> 📁 **Cartella del progetto (sul PC di sviluppo):** `C:\n8n\suno-audio-automation`
+> Tutti i comandi `node ...` / `npm ...` / `git ...` vanno lanciati da lì:
+> ```powershell
+> cd C:\n8n\suno-audio-automation
+> ```
+
 ---
 
 ## Come funziona (in breve)

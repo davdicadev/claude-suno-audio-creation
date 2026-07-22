@@ -2,6 +2,13 @@
 
 Questa guida ti porta dal PC "vuoto" alla prima automazione funzionante. Comandi in **PowerShell**. Dove trovi `<...>` sostituisci con i tuoi valori.
 
+> 📁 **Cartella del progetto:** `C:\n8n\suno-audio-automation`
+> Tutti i comandi `node ...` / `npm ...` / `git ...` vanno lanciati da qui.
+> Primo comando in ogni sessione di PowerShell:
+> ```powershell
+> cd C:\n8n\suno-audio-automation
+> ```
+
 ---
 
 ## Uso quotidiano (dopo il primo setup)
