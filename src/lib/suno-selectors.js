@@ -36,8 +36,11 @@ module.exports = {
     'label:has-text("Instrumental")',
   ],
 
-  // Bottone che avvia la generazione.
+  // Bottone che avvia la generazione. Su Suno ha aria-label "Create song".
   createButton: [
+    'button[aria-label="Create song"]',
+    'button[aria-label*="create song" i]',
+    'button[aria-label*="create" i]',
     'button:has-text("Create")',
     'button[data-testid*="create" i]',
     'button:has-text("Generate")',

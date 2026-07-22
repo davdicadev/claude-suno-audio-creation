@@ -370,8 +370,20 @@ async function launchBatch(page, project, batch) {
           "e, se il layout e' cambiato, aggiorna 'promptTextarea' in src/lib/suno-selectors.js"
       );
     }
+    // Inserisci il prompt e VERIFICA che sia stato registrato (Suno abilita
+    // Create solo se il campo contiene testo).
+    await field.click();
+    await field.fill("");
     await field.fill(click.testo);
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(400);
+    let val = await field.inputValue().catch(() => "");
+    if (!val || val.trim().length < 3) {
+      // fill non registrato: prova a digitare
+      await field.click();
+      await page.keyboard.type(click.testo.slice(0, 300));
+      await page.waitForTimeout(400);
+      val = await field.inputValue().catch(() => "");
+    }
 
     const createBtn = await firstLocator(page, SEL.createButton, 8000);
     if (!createBtn) {
@@ -381,7 +393,61 @@ async function launchBatch(page, project, batch) {
           "e, se serve, aggiorna 'createButton' in src/lib/suno-selectors.js"
       );
     }
-    await createBtn.click();
+
+    // Attendi che il bottone si abiliti (Suno usa data-trigger-disabled / disabled).
+    let abilitato = false;
+    for (let w = 0; w < 24; w++) {
+      const dtd = await createBtn.getAttribute("data-trigger-disabled");
+      const disProp = await createBtn.isDisabled().catch(() => false);
+      if (dtd === null && !disProp) {
+        abilitato = true;
+        break;
+      }
+      await page.waitForTimeout(500);
+    }
+    if (!abilitato) {
+      await saveDebugShot(page, project, "create-disabilitato");
+      throw new Error(
+        `[${project.nome}] il bottone Create resta DISABILITATO. Cause tipiche: ` +
+          "il prompt non e' stato inserito, oppure l'account Suno e' senza crediti. " +
+          `Testo letto nel campo: "${(val || "").slice(0, 40)}". ` +
+          "Vedi 'errore-create-disabilitato.png' nella cartella del progetto."
+      );
+    }
+
+    // Chiudi eventuali overlay (tooltip/popup) che intercettano il click.
+    try {
+      await page.keyboard.press("Escape");
+    } catch (_) {}
+
+    // Click robusto: normale -> forzato -> via JS.
+    let cliccato = false;
+    for (const tentativo of ["normale", "forzato", "js"]) {
+      try {
+        if (tentativo === "js") {
+          await createBtn.evaluate((el) => el.click());
+        } else {
+          await createBtn.click({
+            timeout: 12000,
+            force: tentativo === "forzato",
+          });
+        }
+        cliccato = true;
+        break;
+      } catch (e) {
+        log.warn(
+          `[${project.nome}]   click Create (${tentativo}) non riuscito, riprovo...`
+        );
+      }
+    }
+    if (!cliccato) {
+      await saveDebugShot(page, project, "click-create");
+      throw new Error(
+        `[${project.nome}] impossibile cliccare Create (overlay che intercetta?). ` +
+          "Vedi 'errore-click-create.png' nella cartella del progetto."
+      );
+    }
+
     log.info(
       `[${project.nome}]   generazione ${i + 1}/${batch.length} del lotto avviata ` +
         `(strumentale: ${click.strumentale ? "si" : "no"})`
