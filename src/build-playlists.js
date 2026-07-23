@@ -255,10 +255,9 @@ function concatAccurate(cfg, segments, outFile) {
   try {
     fs.unlinkSync(listFile);
   } catch (_) {}
-  if (r.status !== 0) {
-    throw new Error(
-      `FFMPEG concat fallito (${outFile}): ${String(r.stderr || "").slice(-400)}`
-    );
+  if (r.error || r.status !== 0) {
+    const dett = r.error ? r.error.message : String(r.stderr || "").slice(-400);
+    throw new Error(`FFMPEG concat fallito (${outFile}): ${dett}`);
   }
 }
 
@@ -278,10 +277,9 @@ function concatFast(cfg, brani, outFile) {
   try {
     fs.unlinkSync(listFile);
   } catch (_) {}
-  if (r.status !== 0) {
-    throw new Error(
-      `FFMPEG (veloce) fallito (${outFile}): ${String(r.stderr || "").slice(-400)}`
-    );
+  if (r.error || r.status !== 0) {
+    const dett = r.error ? r.error.message : String(r.stderr || "").slice(-400);
+    throw new Error(`FFMPEG (veloce) fallito (${outFile}): ${dett}`);
   }
 }
 
@@ -381,9 +379,40 @@ function processProject(cfg, project, reencode) {
   log.step(`[${project.nome}] playlist e tracklist completate.`);
 }
 
+// Verifica che ffmpeg/ffprobe siano davvero lanciabili. Da n8n avviato
+// dall'interfaccia grafica (launchd) il PATH spesso NON contiene
+// /opt/homebrew/bin, quindi "ffmpeg" non viene trovato e spawnSync fallisce
+// con stderr vuoto. Qui diamo un messaggio chiaro e la soluzione.
+function ensureFfmpeg(cfg) {
+  for (const [nome, bin] of [
+    ["ffmpeg", cfg.ffmpegPath],
+    ["ffprobe", cfg.ffprobePath],
+  ]) {
+    const r = spawnSync(bin, ["-version"], { encoding: "utf8" });
+    if (r.error || r.status !== 0) {
+      const motivo =
+        r.error && r.error.code === "ENOENT"
+          ? `'${bin}' non trovato nel PATH`
+          : r.error
+            ? r.error.message
+            : `exit ${r.status}`;
+      throw new Error(
+        `${nome} non è utilizzabile (${motivo}).\n` +
+          `Se lanci da n8n, l'ambiente spesso non vede /opt/homebrew/bin. Rimedi:\n` +
+          `  1) avvia n8n da Terminale (eredita il PATH giusto), OPPURE\n` +
+          `  2) metti il percorso COMPLETO nel config/projects.json:\n` +
+          `       "ffmpegPath": "/opt/homebrew/bin/ffmpeg",\n` +
+          `       "ffprobePath": "/opt/homebrew/bin/ffprobe"\n` +
+          `     (verifica il percorso con 'which ffmpeg' nel Terminale).`
+      );
+    }
+  }
+}
+
 function main() {
   const args = parseArgs(process.argv);
   const cfg = loadConfig(args.config);
+  ensureFfmpeg(cfg);
 
   let progetti = cfg.progetti.filter((p) => p.attivo);
   if (args.project) {
