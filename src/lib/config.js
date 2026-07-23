@@ -2,12 +2,22 @@
 
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 
 const DEFAULT_CONFIG_PATH = path.resolve(
   process.cwd(),
   "config",
   "projects.json"
 );
+
+// Espande la "~" iniziale nel percorso della home (macOS/Linux): Node non lo fa
+// da solo, e senza questo un baseDir "~/suno" creerebbe una cartella "~" a caso.
+function expandHome(p) {
+  if (typeof p === "string" && (p === "~" || p.startsWith("~/"))) {
+    return path.join(os.homedir(), p.slice(1));
+  }
+  return p;
+}
 
 /**
  * Carica e valida il file di configurazione multi-progetto.
@@ -33,6 +43,11 @@ function loadConfig(configPath) {
   if (!Array.isArray(raw.progetti) || raw.progetti.length === 0) {
     throw new Error("Config: 'progetti' deve essere un array non vuoto.");
   }
+
+  raw.baseDir = expandHome(raw.baseDir);
+  if (raw.browserProfilesDir) raw.browserProfilesDir = expandHome(raw.browserProfilesDir);
+  if (raw.ffmpegPath) raw.ffmpegPath = expandHome(raw.ffmpegPath);
+  if (raw.ffprobePath) raw.ffprobePath = expandHome(raw.ffprobePath);
 
   const maxBatchGlobal = int(raw.maxGenerazioniPerBatch, 10);
 

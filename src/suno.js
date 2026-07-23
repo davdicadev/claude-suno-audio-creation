@@ -775,6 +775,7 @@ async function openContextForProfile(cfg, profile) {
   };
 
   let context = null;
+  let usato = "chromium-interno";
   const channel = cfg.browserChannel;
   if (channel) {
     try {
@@ -782,6 +783,7 @@ async function openContextForProfile(cfg, profile) {
         ...baseOpts,
         channel,
       });
+      usato = channel;
     } catch (e) {
       log.warn(
         `Browser '${channel}' non disponibile (${e.message}). ` +
@@ -792,6 +794,11 @@ async function openContextForProfile(cfg, profile) {
   if (!context) {
     context = await chromium.launchPersistentContext(dir, baseOpts);
   }
+
+  // Log diagnostico: da qui si capisce se login e run usano lo stesso profilo
+  // e lo stesso browser (fondamentale se il login non viene ricordato).
+  log.info(`Profilo browser: ${dir}`);
+  log.info(`Browser usato: ${usato}`);
 
   // Stealth leggero: nasconde navigator.webdriver alle pagine.
   await context.addInitScript(() => {
