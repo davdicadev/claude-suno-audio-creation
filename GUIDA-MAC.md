@@ -82,7 +82,11 @@ Verifica:
 echo $ANTHROPIC_API_KEY
 ```
 
-> Se lanci le fasi da n8n, la chiave deve essere nell'ambiente in cui **gira n8n** (vedi Passo 8).
+> **Usi n8n?** n8n (soprattutto se avviato da Homebrew/launchd) **spesso non eredita** la variabile d'ambiente. La soluzione più semplice e sicura è mettere la chiave in un **file**: l'automazione lo legge da sola.
+> ```bash
+> echo 'sk-ant-...la-tua-chiave...' > ~/suno-audio-automation/config/anthropic-key.txt
+> ```
+> Il file `config/anthropic-key.txt` è già in `.gitignore` (non finisce mai su git). L'ordine di ricerca della chiave è: 1) variabile d'ambiente `ANTHROPIC_API_KEY`; 2) file `config/anthropic-key.txt`; 3) campo `"anthropicApiKey"` nel `projects.json`.
 
 ---
 
@@ -211,7 +215,7 @@ Se il nodo Execute Command dà errore **`node: command not found`** o **`ffmpeg:
 |---|---|
 | `Cannot find module '.../src/suno.js'` | Sei nella cartella sbagliata: `cd ~/suno-audio-automation`. |
 | `File di configurazione non trovato` | `cp config/projects.example.json config/projects.json`. |
-| `ANTHROPIC_API_KEY` non trovata | Aggiungila a `~/.zshrc`, poi `source ~/.zshrc` (o riapri il Terminale/n8n). |
+| `ANTHROPIC_API_KEY` non trovata (da n8n) | Metti la chiave in un file: `echo 'sk-ant-...' > ~/suno-audio-automation/config/anthropic-key.txt`. L'automazione la legge da lì senza bisogno di variabili d'ambiente. |
 | `ffmpeg: command not found` (da n8n) | Avvia n8n da Terminale, oppure metti il percorso completo (`which ffmpeg`) in `projects.json`. |
 | `node: command not found` (da n8n) | Avvia n8n da Terminale dove `node -v` funziona, oppure usa il percorso completo (`which node`) nel workflow. |
 | Il browser non parte | Riesegui `npx playwright install chromium`. |

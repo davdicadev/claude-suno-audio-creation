@@ -184,16 +184,41 @@ async function processProject(client, model, project, dryRun) {
   );
 }
 
+// Trova la chiave Claude, in ordine: variabile d'ambiente -> file
+// config/anthropic-key.txt -> campo 'anthropicApiKey' nel projects.json.
+// (Il file e' comodo con n8n, che spesso non eredita le variabili d'ambiente.)
+function resolveApiKey(cfg) {
+  const env = process.env.ANTHROPIC_API_KEY;
+  if (env && env.trim()) return env.trim();
+  try {
+    const keyFile = path.join(path.dirname(cfg.configPath), "anthropic-key.txt");
+    if (fs.existsSync(keyFile)) {
+      const k = fs.readFileSync(keyFile, "utf8").trim();
+      if (k) return k;
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  if (cfg.anthropicApiKey && String(cfg.anthropicApiKey).trim()) {
+    return String(cfg.anthropicApiKey).trim();
+  }
+  return null;
+}
+
 async function main() {
   const args = parseArgs(process.argv);
-  if (!process.env.ANTHROPIC_API_KEY) {
+  const cfg = loadConfig(args.config);
+  const apiKey = resolveApiKey(cfg);
+  if (!apiKey) {
     throw new Error(
-      "Manca la variabile ANTHROPIC_API_KEY. Impostala con la tua chiave " +
-        "creata su console.anthropic.com (vedi README)."
+      "Chiave Claude non trovata. Impostala in UNO di questi modi:\n" +
+        "  1) variabile d'ambiente ANTHROPIC_API_KEY;\n" +
+        "  2) file 'config/anthropic-key.txt' contenente solo la chiave (consigliato con n8n);\n" +
+        "  3) campo \"anthropicApiKey\" nel projects.json.\n" +
+        "Crea la chiave su console.anthropic.com (vedi README)."
     );
   }
-  const cfg = loadConfig(args.config);
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const client = new Anthropic({ apiKey });
 
   let progetti = cfg.progetti.filter((p) => p.attivo);
   if (args.project) {

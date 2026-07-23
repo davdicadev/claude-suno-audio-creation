@@ -4,6 +4,10 @@ node_modules/
 # Config locale con i tuoi progetti (parti da config/projects.example.json)
 config/projects.json
 
+# Chiave API Claude su file (comoda con n8n, che spesso non eredita le env).
+# NON deve MAI finire su git: e' un segreto.
+config/anthropic-key.txt
+
 # Profili browser persistenti (contengono le sessioni di login a Suno)
 browser-profile/
 browser-profiles/

@@ -70,6 +70,9 @@ function loadConfig(configPath) {
     // hanno header di durata imprecisi che sfasano la tracklist). montaggioVeloce
     // usa la copia diretta (istantanea ma con tempi imprecisi).
     montaggioVeloce: raw.montaggioVeloce === true,
+    // Chiave API Claude opzionale nel config (ultima spiaggia). Meglio usare la
+    // variabile d'ambiente o il file config/anthropic-key.txt.
+    anthropicApiKey: raw.anthropicApiKey || null,
     // Taglio del silenzio in eccesso a inizio/fine di ogni brano.
     tagliaSilenzio: raw.tagliaSilenzio !== false, // default true
     maxSilenzioSecondi:
