@@ -59,5 +59,6 @@ module.exports = {
     pollInterval: 15000, // ogni quanto ricontrollare la libreria
     pollMaxPerBatch: 15 * 60 * 1000, // attesa massima per completare UN lotto
     loginWait: 10 * 60 * 1000, // tempo per fare il login manuale
+    captchaWait: 5 * 60 * 1000, // tempo max per risolvere a mano un captcha
   },
 };

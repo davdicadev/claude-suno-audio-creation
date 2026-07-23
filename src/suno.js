@@ -349,6 +349,40 @@ async function ensureCreatePage(page, project) {
   );
 }
 
+/**
+ * Clicca "Create" con un click NORMALE che attende: se un captcha o un popup
+ * copre il bottone, il click non riesce e riproviamo finche' l'utente non lo
+ * risolve a mano. Appena l'overlay sparisce, il click va a segno.
+ * Importante: qui NON usiamo il click via JavaScript, che aggirerebbe il captcha
+ * inviando la generazione senza risolverlo.
+ * @returns {boolean} true se il click e' andato a segno entro il tempo massimo
+ */
+async function clickCreateAttendendoCaptcha(page, project, createBtn) {
+  const start = Date.now();
+  let avvisato = false;
+  while (Date.now() - start < SEL.timeouts.captchaWait) {
+    try {
+      await createBtn.click({ timeout: 12000 });
+      if (avvisato) {
+        log.info(`[${project.nome}] captcha risolto, riprendo la generazione.`);
+      }
+      return true;
+    } catch (_) {
+      if (!avvisato) {
+        log.warn(
+          `[${project.nome}] ⚠️  GENERAZIONE IN PAUSA: sembra esserci un CAPTCHA o un ` +
+            "popup che copre il bottone Create. Risolvilo/chiudilo A MANO nella " +
+            "finestra del browser: riparto DA SOLO appena e' risolto (attendo fino a " +
+            `${Math.round(SEL.timeouts.captchaWait / 60000)} minuti).`
+        );
+        avvisato = true;
+      }
+      await page.waitForTimeout(3000);
+    }
+  }
+  return false;
+}
+
 /** Lancia un lotto di generazioni (senza attendere il completamento). */
 async function launchBatch(page, project, batch) {
   // Carica la pagina Create e ottieni il campo prompt (con tentativi).
@@ -414,45 +448,19 @@ async function launchBatch(page, project, batch) {
 
     // Breve attesa perche' la UI si stabilizzi.
     await page.waitForTimeout(600);
-    // Avviso NON fatale se risulta disabilitato: proviamo comunque (il click JS
-    // aggira l'overlay che su Suno intercetta i click).
-    const disProp = await createBtn.isDisabled().catch(() => false);
-    if (disProp) {
-      log.warn(
-        `[${project.nome}]   il bottone Create sembra disabilitato; provo comunque.`
-      );
-    }
 
-    // Chiudi eventuali overlay (tooltip/popup) che intercettano il click.
-    try {
-      await page.keyboard.press("Escape");
-    } catch (_) {}
-
-    // Click robusto: via JS (aggira gli overlay) -> forzato -> normale.
-    let cliccato = false;
-    for (const tentativo of ["js", "forzato", "normale"]) {
-      try {
-        if (tentativo === "js") {
-          await createBtn.evaluate((el) => el.click());
-        } else {
-          await createBtn.click({
-            timeout: 12000,
-            force: tentativo === "forzato",
-          });
-        }
-        cliccato = true;
-        break;
-      } catch (e) {
-        log.warn(
-          `[${project.nome}]   click Create (${tentativo}) non riuscito, riprovo...`
-        );
-      }
-    }
+    // Click "normale" che ASPETTA: se un captcha (o un popup) copre il bottone,
+    // il click non riesce; noi avvisiamo e riproviamo finche' NON risolvi il
+    // captcha a mano nella finestra. Appena l'overlay sparisce, il click va a
+    // segno e la generazione riparte da sola. NON usiamo il click via JS qui:
+    // aggirerebbe il captcha inviando senza risolverlo.
+    const cliccato = await clickCreateAttendendoCaptcha(page, project, createBtn);
     if (!cliccato) {
       await saveDebugShot(page, project, "click-create");
       throw new Error(
-        `[${project.nome}] impossibile cliccare Create (overlay che intercetta?). ` +
-          "Vedi 'errore-click-create.png' nella cartella del progetto."
+        `[${project.nome}] generazione non avviata entro il tempo massimo ` +
+          `(${Math.round(SEL.timeouts.captchaWait / 60000)} min). Se c'era un ` +
+          "captcha, non e' stato risolto in tempo. Vedi 'errore-click-create.png'."
       );
     }
 
