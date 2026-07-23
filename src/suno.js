@@ -394,24 +394,14 @@ async function launchBatch(page, project, batch) {
       );
     }
 
-    // Attendi che il bottone si abiliti (Suno usa data-trigger-disabled / disabled).
-    let abilitato = false;
-    for (let w = 0; w < 24; w++) {
-      const dtd = await createBtn.getAttribute("data-trigger-disabled");
-      const disProp = await createBtn.isDisabled().catch(() => false);
-      if (dtd === null && !disProp) {
-        abilitato = true;
-        break;
-      }
-      await page.waitForTimeout(500);
-    }
-    if (!abilitato) {
-      await saveDebugShot(page, project, "create-disabilitato");
-      throw new Error(
-        `[${project.nome}] il bottone Create resta DISABILITATO. Cause tipiche: ` +
-          "il prompt non e' stato inserito, oppure l'account Suno e' senza crediti. " +
-          `Testo letto nel campo: "${(val || "").slice(0, 40)}". ` +
-          "Vedi 'errore-create-disabilitato.png' nella cartella del progetto."
+    // Breve attesa perche' la UI si stabilizzi.
+    await page.waitForTimeout(600);
+    // Avviso NON fatale se risulta disabilitato: proviamo comunque (il click JS
+    // aggira l'overlay che su Suno intercetta i click).
+    const disProp = await createBtn.isDisabled().catch(() => false);
+    if (disProp) {
+      log.warn(
+        `[${project.nome}]   il bottone Create sembra disabilitato; provo comunque.`
       );
     }
 
@@ -420,9 +410,9 @@ async function launchBatch(page, project, batch) {
       await page.keyboard.press("Escape");
     } catch (_) {}
 
-    // Click robusto: normale -> forzato -> via JS.
+    // Click robusto: via JS (aggira gli overlay) -> forzato -> normale.
     let cliccato = false;
-    for (const tentativo of ["normale", "forzato", "js"]) {
+    for (const tentativo of ["js", "forzato", "normale"]) {
       try {
         if (tentativo === "js") {
           await createBtn.evaluate((el) => el.click());
