@@ -285,12 +285,13 @@ async function setInstrumental(page, wanted) {
   );
   if (isOn !== wanted) {
     try {
-      await toggle.click();
+      // Click via JS (l'overlay dell'area di creazione blocca i click del mouse).
+      await toggle.evaluate((el) => el.click());
       await page.waitForTimeout(300);
       const after = await readInstrumentalState(toggle);
       if (after !== null && after !== wanted) {
         // ha girato dalla parte sbagliata: riprova una volta
-        await toggle.click();
+        await toggle.evaluate((el) => el.click());
         await page.waitForTimeout(300);
       }
     } catch (_) {
@@ -370,19 +371,36 @@ async function launchBatch(page, project, batch) {
           "e, se il layout e' cambiato, aggiorna 'promptTextarea' in src/lib/suno-selectors.js"
       );
     }
-    // Inserisci il prompt e VERIFICA che sia stato registrato (Suno abilita
-    // Create solo se il campo contiene testo).
-    await field.click();
-    await field.fill("");
-    await field.fill(click.testo);
-    await page.waitForTimeout(400);
-    let val = await field.inputValue().catch(() => "");
+    // Inserisci il prompt SENZA click del mouse (un overlay copre l'area di
+    // creazione e intercetterebbe i click). fill() e focus() usano il focus, non
+    // il puntatore, quindi passano oltre l'overlay.
+    let val = "";
+    try {
+      await field.fill(click.testo);
+    } catch (_) {
+      /* provo con il metodo JS qui sotto */
+    }
+    await page.waitForTimeout(300);
+    val = await field.inputValue().catch(() => "");
     if (!val || val.trim().length < 3) {
-      // fill non registrato: prova a digitare
-      await field.click();
-      await page.keyboard.type(click.testo.slice(0, 300));
-      await page.waitForTimeout(400);
-      val = await field.inputValue().catch(() => "");
+      // Fallback robusto: imposta il valore via JS in modo compatibile con React
+      // (setter nativo + evento input), senza alcun click.
+      try {
+        await field.evaluate((el, testo) => {
+          const proto = window.HTMLTextAreaElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
+          setter.call(el, testo);
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+        }, click.testo);
+        await page.waitForTimeout(300);
+        val = await field.inputValue().catch(() => "");
+      } catch (_) {
+        /* ultimo tentativo: digitazione da tastiera */
+        await field.focus().catch(() => {});
+        await page.keyboard.type(click.testo.slice(0, 300));
+        await page.waitForTimeout(300);
+        val = await field.inputValue().catch(() => "");
+      }
     }
 
     const createBtn = await firstLocator(page, SEL.createButton, 8000);
