@@ -389,8 +389,11 @@ async function clickCreateAttendendoCaptcha(page, project, createBtn) {
  * vengono scaricati in sottofondo man mano che sono pronti (pipeline).
  * @returns {boolean} true se il click e' andato a segno
  */
-async function submitGeneration(page, project, click) {
-  await setInstrumental(page, click.strumentale);
+async function submitGeneration(page, project, click, impostaStrumentale = true) {
+  // Il toggle Instrumental lo tocchiamo solo quando serve (prima generazione o
+  // quando cambia): Suno ricorda l'impostazione, quindi ripeterlo ogni volta è
+  // solo tempo perso e riempie il log di avvisi.
+  if (impostaStrumentale) await setInstrumental(page, click.strumentale);
 
   let field = await firstLocator(page, SEL.promptTextarea, 8000);
   if (!field) {
@@ -567,13 +570,26 @@ function planAssignments(ctx, runStart, finalize) {
   return result;
 }
 
-/** Scarica un MP3 usando la sessione autenticata del browser. */
-async function downloadMp3(context, url, destPath) {
-  const resp = await context.request.get(url, { timeout: 120000 });
-  if (!resp.ok()) throw new Error(`HTTP ${resp.status()} su ${url}`);
-  const buf = await resp.body();
-  fs.mkdirSync(path.dirname(destPath), { recursive: true });
-  fs.writeFileSync(destPath, buf);
+/**
+ * Scarica un MP3 usando la sessione autenticata del browser. L'endpoint audio
+ * di Suno a volte è lento o si impianta: usiamo un timeout più corto e un paio
+ * di tentativi, così un singolo download lento non blocca a lungo la sua corsia.
+ */
+async function downloadMp3(context, url, destPath, attempts = 3) {
+  let lastErr;
+  for (let a = 1; a <= attempts; a++) {
+    try {
+      const resp = await context.request.get(url, { timeout: 60000 });
+      if (!resp.ok()) throw new Error(`HTTP ${resp.status()} su ${url}`);
+      const buf = await resp.body();
+      fs.mkdirSync(path.dirname(destPath), { recursive: true });
+      fs.writeFileSync(destPath, buf);
+      return;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr;
 }
 
 // Nome file provvisorio (prima della riscrittura Claude).
@@ -587,41 +603,70 @@ function sanitizeRaw(title) {
   );
 }
 
-/** Scarica le assegnazioni e ritorna i record per il manifest. */
+// Quanti download fare IN PARALLELO. L'endpoint audio di Suno a volte è lento
+// per un singolo brano: scaricando in parallelo, i brani veloci non restano
+// bloccati dietro a uno lento e la coda di "pronti" non si accumula.
+const DOWNLOAD_CONCURRENCY = 6;
+
+/** Scarica le assegnazioni IN PARALLELO e ritorna i record per il manifest. */
 async function downloadAssignments(context, project, assignments, ctx) {
-  const tracks = [];
-  let ok = 0;
-  let fail = 0;
+  // Prepara i job unici (salta i già scaricati).
+  const jobs = [];
   for (const { clip, folder } of assignments) {
     if (ctx.downloadedIds.has(clip.id)) continue;
     const fileName = `${sanitizeRaw(clip.title)}_${clip.id}.mp3`;
     const rel = `cartella-${folder}/${fileName}`;
     const dest = path.join(project.dirs.root, rel.split("/").join(path.sep));
-    const record = {
-      id: clip.id,
-      originalTitle: clip.title || "brano",
-      folder,
-      file: rel,
-      createdAt: clip.createdAt || null,
-    };
-    if (fs.existsSync(dest)) {
-      ctx.downloadedIds.add(clip.id);
-      tracks.push(record);
-      continue;
-    }
-    try {
-      await downloadMp3(context, clip.audioUrl, dest);
-      ctx.downloadedIds.add(clip.id);
-      ok += 1;
-      tracks.push(record);
-      log.info(`[${project.nome}]   scaricato ${rel}`);
-    } catch (e) {
-      fail += 1;
-      log.warn(`[${project.nome}]   download fallito ${clip.id}: ${e.message}`);
+    jobs.push({
+      clip,
+      dest,
+      rel,
+      record: {
+        id: clip.id,
+        originalTitle: clip.title || "brano",
+        folder,
+        file: rel,
+        createdAt: clip.createdAt || null,
+      },
+    });
+  }
+
+  const tracks = [];
+  let ok = 0;
+  let fail = 0;
+  let next = 0;
+
+  // Pool di "corsie" parallele: ognuna prende il job successivo finché finiscono.
+  async function corsia() {
+    while (next < jobs.length) {
+      const job = jobs[next++];
+      if (ctx.downloadedIds.has(job.clip.id)) continue;
+      if (fs.existsSync(job.dest)) {
+        ctx.downloadedIds.add(job.clip.id);
+        tracks.push(job.record);
+        continue;
+      }
+      try {
+        await downloadMp3(context, job.clip.audioUrl, job.dest);
+        ctx.downloadedIds.add(job.clip.id);
+        ok += 1;
+        tracks.push(job.record);
+        log.info(`[${project.nome}]   scaricato ${job.rel}`);
+      } catch (e) {
+        fail += 1;
+        log.warn(`[${project.nome}]   download fallito ${job.clip.id}: ${e.message}`);
+      }
     }
   }
+
+  const corsie = [];
+  for (let i = 0; i < Math.min(DOWNLOAD_CONCURRENCY, jobs.length); i++) {
+    corsie.push(corsia());
+  }
+  await Promise.all(corsie);
+
   if (ok || fail) {
-    log.info(`[${project.nome}]   lotto: scaricati ${ok}, falliti ${fail}`);
+    log.info(`[${project.nome}]   scaricati ${ok}, falliti ${fail}`);
   }
   return tracks;
 }
@@ -662,15 +707,31 @@ async function processProject(context, page, project) {
     let lanciate = 0;
     let fermi = 0; // cicli SENZA alcun progresso, per l'anti-stallo
     let ultimoProgresso = ""; // firma dello stato per rilevare lo stallo vero
+    let ultimoStrumentale = null; // per toccare il toggle solo quando cambia
+
+    // Non far crescere all'infinito i brani in attesa di download: se il
+    // download resta indietro, si smette di generare e si recupera prima.
+    const backlogMax = maxInFlight * 3;
 
     // Carica la pagina Create UNA volta sola: da qui in poi non si ricarica.
     await ensureCreatePage(page, project);
 
     while (true) {
-      // 1) RIEMPI: invia nuove generazioni finché la coda di Suno non è piena.
-      while (queue.length > 0 && inFlightSongs(ctx, runStart, lanciate) < maxInFlight) {
+      // 1) RIEMPI: invia nuove generazioni finché la coda di Suno è piena, ma
+      //    senza accumulare troppi brani ancora da scaricare (backlogMax).
+      while (
+        queue.length > 0 &&
+        inFlightSongs(ctx, runStart, lanciate) < maxInFlight &&
+        ctx.expectedIds.size - ctx.downloadedIds.size < backlogMax
+      ) {
         const click = queue.shift();
-        await submitGeneration(page, project, click);
+        await submitGeneration(
+          page,
+          project,
+          click,
+          click.strumentale !== ultimoStrumentale
+        );
+        ultimoStrumentale = click.strumentale;
         lanciate += 1;
         // Aggiorna subito lo stato: la risposta di generazione popola expectedIds.
         await refreshFeed(context, ctx);
