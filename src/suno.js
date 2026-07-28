@@ -383,93 +383,87 @@ async function clickCreateAttendendoCaptcha(page, project, createBtn) {
   return false;
 }
 
-/** Lancia un lotto di generazioni (senza attendere il completamento). */
-async function launchBatch(page, project, batch) {
-  // Carica la pagina Create e ottieni il campo prompt (con tentativi).
-  await ensureCreatePage(page, project);
+/**
+ * Invia UNA generazione sulla pagina Create GIÀ aperta, SENZA ricaricarla.
+ * Riempie il prompt e clicca Create. Non attende il completamento: i brani
+ * vengono scaricati in sottofondo man mano che sono pronti (pipeline).
+ * @returns {boolean} true se il click e' andato a segno
+ */
+async function submitGeneration(page, project, click) {
+  await setInstrumental(page, click.strumentale);
 
-  for (let i = 0; i < batch.length; i++) {
-    const click = batch[i];
-    await setInstrumental(page, click.strumentale);
-
-    const textarea = await firstLocator(page, SEL.promptTextarea, 8000);
-    if (!textarea) {
-      // la pagina potrebbe essersi ricaricata: riprova a garantirla
-      await ensureCreatePage(page, project);
-    }
-    const field = (await firstLocator(page, SEL.promptTextarea, 8000)) || null;
-    if (!field) {
-      await saveDebugShot(page, project, "campo-prompt");
-      throw new Error(
-        `[${project.nome}] campo prompt non trovato. Vedi 'errore-campo-prompt.png' ` +
-          "e, se il layout e' cambiato, aggiorna 'promptTextarea' in src/lib/suno-selectors.js"
-      );
-    }
-    // Inserisci il prompt SENZA click del mouse (un overlay copre l'area di
-    // creazione e intercetterebbe i click). fill() e focus() usano il focus, non
-    // il puntatore, quindi passano oltre l'overlay.
-    let val = "";
-    try {
-      await field.fill(click.testo);
-    } catch (_) {
-      /* provo con il metodo JS qui sotto */
-    }
-    await page.waitForTimeout(300);
-    val = await field.inputValue().catch(() => "");
-    if (!val || val.trim().length < 3) {
-      // Fallback robusto: imposta il valore via JS in modo compatibile con React
-      // (setter nativo + evento input), senza alcun click.
-      try {
-        await field.evaluate((el, testo) => {
-          const proto = window.HTMLTextAreaElement.prototype;
-          const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
-          setter.call(el, testo);
-          el.dispatchEvent(new Event("input", { bubbles: true }));
-        }, click.testo);
-        await page.waitForTimeout(300);
-        val = await field.inputValue().catch(() => "");
-      } catch (_) {
-        /* ultimo tentativo: digitazione da tastiera */
-        await field.focus().catch(() => {});
-        await page.keyboard.type(click.testo.slice(0, 300));
-        await page.waitForTimeout(300);
-        val = await field.inputValue().catch(() => "");
-      }
-    }
-
-    const createBtn = await firstLocator(page, SEL.createButton, 8000);
-    if (!createBtn) {
-      await saveDebugShot(page, project, "bottone-create");
-      throw new Error(
-        `[${project.nome}] bottone Create non trovato. Vedi 'errore-bottone-create.png' ` +
-          "e, se serve, aggiorna 'createButton' in src/lib/suno-selectors.js"
-      );
-    }
-
-    // Breve attesa perche' la UI si stabilizzi.
-    await page.waitForTimeout(600);
-
-    // Click "normale" che ASPETTA: se un captcha (o un popup) copre il bottone,
-    // il click non riesce; noi avvisiamo e riproviamo finche' NON risolvi il
-    // captcha a mano nella finestra. Appena l'overlay sparisce, il click va a
-    // segno e la generazione riparte da sola. NON usiamo il click via JS qui:
-    // aggirerebbe il captcha inviando senza risolverlo.
-    const cliccato = await clickCreateAttendendoCaptcha(page, project, createBtn);
-    if (!cliccato) {
-      await saveDebugShot(page, project, "click-create");
-      throw new Error(
-        `[${project.nome}] generazione non avviata entro il tempo massimo ` +
-          `(${Math.round(SEL.timeouts.captchaWait / 60000)} min). Se c'era un ` +
-          "captcha, non e' stato risolto in tempo. Vedi 'errore-click-create.png'."
-      );
-    }
-
-    log.info(
-      `[${project.nome}]   generazione ${i + 1}/${batch.length} del lotto avviata ` +
-        `(strumentale: ${click.strumentale ? "si" : "no"})`
-    );
-    await page.waitForTimeout(SEL.timeouts.afterCreateClick);
+  let field = await firstLocator(page, SEL.promptTextarea, 8000);
+  if (!field) {
+    // Solo in caso di problema: ripristina la pagina Create (unico reload).
+    await ensureCreatePage(page, project);
+    field = await firstLocator(page, SEL.promptTextarea, 8000);
   }
+  if (!field) {
+    await saveDebugShot(page, project, "campo-prompt");
+    throw new Error(
+      `[${project.nome}] campo prompt non trovato. Vedi 'errore-campo-prompt.png' ` +
+        "e, se il layout e' cambiato, aggiorna 'promptTextarea' in src/lib/suno-selectors.js"
+    );
+  }
+
+  // Inserisci il prompt SENZA click del mouse (un overlay copre l'area di
+  // creazione e intercetterebbe i click). fill() e focus() usano il focus, non
+  // il puntatore, quindi passano oltre l'overlay.
+  let val = "";
+  try {
+    await field.fill(click.testo);
+  } catch (_) {
+    /* provo con il metodo JS qui sotto */
+  }
+  await page.waitForTimeout(300);
+  val = await field.inputValue().catch(() => "");
+  if (!val || val.trim().length < 3) {
+    // Fallback robusto: imposta il valore via JS in modo compatibile con React
+    // (setter nativo + evento input), senza alcun click.
+    try {
+      await field.evaluate((el, testo) => {
+        const proto = window.HTMLTextAreaElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
+        setter.call(el, testo);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }, click.testo);
+      await page.waitForTimeout(300);
+      val = await field.inputValue().catch(() => "");
+    } catch (_) {
+      /* ultimo tentativo: digitazione da tastiera */
+      await field.focus().catch(() => {});
+      await page.keyboard.type(click.testo.slice(0, 300));
+      await page.waitForTimeout(300);
+    }
+  }
+
+  const createBtn = await firstLocator(page, SEL.createButton, 8000);
+  if (!createBtn) {
+    await saveDebugShot(page, project, "bottone-create");
+    throw new Error(
+      `[${project.nome}] bottone Create non trovato. Vedi 'errore-bottone-create.png' ` +
+        "e, se serve, aggiorna 'createButton' in src/lib/suno-selectors.js"
+    );
+  }
+
+  // Breve attesa perche' la UI si stabilizzi.
+  await page.waitForTimeout(600);
+
+  // Click "normale" che ASPETTA: se un captcha (o un popup) copre il bottone,
+  // il click non riesce; noi avvisiamo e riproviamo finche' NON risolvi il
+  // captcha a mano nella finestra. NON usiamo il click via JS: aggirerebbe il
+  // captcha inviando senza risolverlo.
+  const cliccato = await clickCreateAttendendoCaptcha(page, project, createBtn);
+  if (!cliccato) {
+    await saveDebugShot(page, project, "click-create");
+    throw new Error(
+      `[${project.nome}] generazione non avviata entro il tempo massimo ` +
+        `(${Math.round(SEL.timeouts.captchaWait / 60000)} min). Se c'era un ` +
+        "captcha, non e' stato risolto in tempo. Vedi 'errore-click-create.png'."
+    );
+  }
+  await page.waitForTimeout(SEL.timeouts.afterCreateClick);
+  return true;
 }
 
 /** Quanti brani del run sono pronti e NON ancora scaricati. */
@@ -479,47 +473,16 @@ function readyNotDownloaded(ctx, runStart) {
   );
 }
 
-/** Attende il completamento di un lotto (o timeout), SENZA ricaricare la pagina. */
-async function pollBatch(page, project, ctx, runStart, expectedNew, opts = {}) {
-  const context = page.context();
-  const maxMs = opts.maxMs || SEL.timeouts.pollMaxPerBatch;
-  const allowZeroStable = opts.allowZeroStable === true;
-  const start = Date.now();
-  let last = -1;
-  let stable = 0;
-
-  log.step(
-    `[${project.nome}]   attendo che Suno finisca di generare (~${expectedNew} brani attesi). ` +
-      "Controllo lo stato in sottofondo, senza ricaricare la pagina: se compare " +
-      "un captcha, risolvilo con calma."
-  );
-
-  while (Date.now() - start < maxMs) {
-    // Aggiorna lo stato in background (non tocca la pagina visibile).
-    await refreshFeed(context, ctx);
-    await page.waitForTimeout(4000);
-
-    const count = readyNotDownloaded(ctx, runStart).length;
-    log.info(
-      `[${project.nome}]   pronti nel lotto: ${count}/${expectedNew} ` +
-        `(${Math.round((Date.now() - start) / 1000)}s)`
-    );
-
-    if (count >= expectedNew) break;
-    if (count === last) {
-      stable += 1;
-      // Esci se il conteggio non cambia da un po'. Nella passata finale
-      // (allowZeroStable) esci anche se il conteggio e' 0 (nulla da aspettare).
-      if (stable >= 3 && (count > 0 || allowZeroStable)) {
-        log.info(`[${project.nome}]   niente di nuovo, procedo.`);
-        break;
-      }
-    } else {
-      stable = 0;
-      last = count;
-    }
-    await page.waitForTimeout(SEL.timeouts.pollInterval);
-  }
+/**
+ * Stima quante canzoni sono "in volo" (generazioni inviate ma non ancora
+ * pronte né scaricate). Usa il numero di generazioni inviate (lanciate*2 brani
+ * attesi) meno quelle già pronte/scaricate: cosi il conteggio è affidabile
+ * anche se la risposta di generazione tarda a essere intercettata.
+ */
+function inFlightSongs(ctx, runStart, lanciate) {
+  const done = ctx.downloadedIds.size;
+  const ready = readyNotDownloaded(ctx, runStart).length;
+  return Math.max(0, lanciate * 2 - done - ready);
 }
 
 // Ordina i clip di una coppia/gruppo e assegna A / B / C.
@@ -664,108 +627,12 @@ async function downloadAssignments(context, project, assignments, ctx) {
 }
 
 /**
- * Attende e SCARICA tutti i brani generati dal lotto appena lanciato, PRIMA di
- * tornare (e quindi prima che il lotto successivo ricarichi la pagina).
- *
- * Ripete "aggiorna stato in background -> scarica ciò che è pronto" finché non
- * resta nessun brano atteso da scaricare, oppure finché Suno smette di produrne
- * di nuovi (per non bloccarsi se una generazione ha reso meno brani del previsto).
- * NON ricarica mai la pagina: se compare un captcha, l'utente ha tutto il tempo.
- * @returns {Array} i record manifest dei brani scaricati in questo lotto
+ * Elabora un progetto con una PIPELINE: tiene sempre piena la coda di Suno
+ * (fino a ~maxGenerazioniPerBatch generazioni in lavorazione insieme) e scarica
+ * i brani in sottofondo man mano che sono pronti, SENZA mai ricaricare la
+ * pagina. Cosi non ci sono attese morte tra un "lotto" e l'altro: appena un
+ * brano è pronto viene scaricato e si libera spazio per lanciarne un altro.
  */
-async function drainBatch(context, page, project, ctx, runStart, expectedNew) {
-  const maxMs = SEL.timeouts.pollMaxPerBatch;
-  const start = Date.now();
-  const collected = [];
-  const baseDownloaded = ctx.downloadedIds.size;
-  let lastState = "";
-  let noProgress = 0;
-
-  log.step(
-    `[${project.nome}]   attendo e SCARICO tutti i ~${expectedNew} brani del lotto ` +
-      "prima di procedere. La pagina NON viene ricaricata finché il lotto non è " +
-      "tutto scaricato: se compare un captcha, risolvilo con calma."
-  );
-
-  while (Date.now() - start < maxMs) {
-    // Aggiorna lo stato in sottofondo (non tocca la pagina visibile).
-    await refreshFeed(context, ctx);
-    await page.waitForTimeout(4000);
-
-    // Scarica ciò che è pronto in gruppi COMPLETI (-> A/B/C accurato).
-    const plan = planAssignments(ctx, runStart, false);
-    const tracks = await downloadAssignments(context, project, plan, ctx);
-    collected.push(...tracks);
-
-    const scaricatiLotto = ctx.downloadedIds.size - baseDownloaded;
-    // Brani ancora attesi: se conosciamo gli id di generazione usiamo quelli,
-    // altrimenti stimiamo dal numero atteso.
-    const attesi =
-      ctx.expectedIds.size > 0
-        ? [...ctx.expectedIds].filter((id) => !ctx.downloadedIds.has(id)).length
-        : Math.max(0, expectedNew - scaricatiLotto);
-    let pronti = readyNotDownloaded(ctx, runStart).length;
-
-    log.info(
-      `[${project.nome}]   lotto: scaricati ${scaricatiLotto}/${expectedNew}, ` +
-        `ancora attesi ${attesi}, pronti da scaricare ora ${pronti} ` +
-        `(${Math.round((Date.now() - start) / 1000)}s)`
-    );
-
-    // Tutto scaricato: niente attesi e niente di pronto in coda.
-    if (attesi === 0 && pronti === 0) {
-      log.info(`[${project.nome}]   lotto scaricato completamente.`);
-      break;
-    }
-
-    // Rilevatore di stallo: se da un po' NON scarichiamo nulla di nuovo e non
-    // arrivano brani nuovi. "state" include gli scaricati: finché scarichiamo,
-    // avanza e non si considera stallo. IMPORTANTE: non lo condizioniamo a
-    // "pronti === 0", altrimenti brani pronti ma spaiati (il gemello non arriva
-    // mai) lo bloccherebbero all'infinito.
-    const state = `${scaricatiLotto}:${attesi}:${pronti}`;
-    if (state === lastState) {
-      noProgress += 1;
-      // Se ci sono brani PRONTI fermi (gruppo mai completato), dopo un po' li
-      // scarichiamo comunque come singoli (finalize -> vanno in C), così non
-      // restiamo bloccati in attesa di un gemello che non arriverà.
-      if (noProgress >= 3 && pronti > 0) {
-        log.info(
-          `[${project.nome}]   ${pronti} brani pronti ma spaiati: li scarico come singoli.`
-        );
-        const fplan = planAssignments(ctx, runStart, true);
-        const ftracks = await downloadAssignments(context, project, fplan, ctx);
-        collected.push(...ftracks);
-        pronti = readyNotDownloaded(ctx, runStart).length;
-        noProgress = 0;
-        lastState = "";
-        continue;
-      }
-      // Nessun avanzamento reale da parecchi cicli: procediamo.
-      if (noProgress >= 8) {
-        log.warn(
-          `[${project.nome}]   nessun avanzamento da un po' (${attesi} attesi non ` +
-            "arrivati: forse Suno ne ha generati meno). Procedo col resto."
-        );
-        break;
-      }
-    } else {
-      noProgress = 0;
-      lastState = state;
-    }
-    await page.waitForTimeout(SEL.timeouts.pollInterval);
-  }
-
-  if (Date.now() - start >= maxMs) {
-    log.warn(
-      `[${project.nome}]   tempo massimo di attesa del lotto raggiunto. ` +
-        "Procedo con quanto scaricato finora."
-    );
-  }
-  return collected;
-}
-
-/** Elabora un progetto: generazione a lotti + download progressivo. */
 async function processProject(context, page, project) {
   ensureDirs(project);
   const ctx = {
@@ -778,64 +645,94 @@ async function processProject(context, page, project) {
   const runStart = Date.now();
   const allTracks = [];
 
+  // Numero massimo di CANZONI in lavorazione contemporaneamente (Suno ne
+  // elabora ~10 generazioni insieme = ~20 canzoni).
+  const maxInFlight = project.maxGenerazioniPerBatch * 2;
+
   log.step(
     `=== Progetto '${project.nome}' (account: ${project.sunoProfilo}): ` +
-      `${project.fabbisogno.clickTotali} generazioni a lotti di ` +
-      `${project.maxGenerazioniPerBatch}, obiettivo A=${project.fabbisogno.bisognoA} ` +
-      `B=${project.fabbisogno.bisognoB} ===`
+      `${project.fabbisogno.clickTotali} generazioni, fino a ` +
+      `${project.maxGenerazioniPerBatch} in parallelo, obiettivo ` +
+      `A=${project.fabbisogno.bisognoA} B=${project.fabbisogno.bisognoB} ===`
   );
 
   try {
     const queue = buildClickQueue(project);
-    const batchSize = project.maxGenerazioniPerBatch;
-    let batchNum = 0;
-    const totBatch = Math.ceil(queue.length / batchSize);
+    const totale = queue.length;
+    let lanciate = 0;
+    let fermi = 0; // cicli SENZA alcun progresso, per l'anti-stallo
+    let ultimoProgresso = ""; // firma dello stato per rilevare lo stallo vero
 
-    while (queue.length > 0) {
-      batchNum += 1;
-      const batch = queue.splice(0, batchSize);
-      log.step(
-        `[${project.nome}] lotto ${batchNum}/${totBatch}: ${batch.length} generazioni`
-      );
+    // Carica la pagina Create UNA volta sola: da qui in poi non si ricarica.
+    await ensureCreatePage(page, project);
 
-      await launchBatch(page, project, batch);
-      // Attende e SCARICA tutti i brani di questo lotto PRIMA di passare al
-      // successivo (che ricaricherebbe la pagina). Cosi non si ricarica mai
-      // mentre ci sono ancora brani di questa sessione da scaricare.
-      const tracks = await drainBatch(
-        context,
-        page,
-        project,
-        ctx,
-        runStart,
-        batch.length * 2
-      );
+    while (true) {
+      // 1) RIEMPI: invia nuove generazioni finché la coda di Suno non è piena.
+      while (queue.length > 0 && inFlightSongs(ctx, runStart, lanciate) < maxInFlight) {
+        const click = queue.shift();
+        await submitGeneration(page, project, click);
+        lanciate += 1;
+        // Aggiorna subito lo stato: la risposta di generazione popola expectedIds.
+        await refreshFeed(context, ctx);
+        log.info(
+          `[${project.nome}] generazione ${lanciate}/${totale} inviata ` +
+            `(strumentale: ${click.strumentale ? "si" : "no"}; in lavorazione su Suno: ` +
+            `~${inFlightSongs(ctx, runStart, lanciate)} brani)`
+        );
+      }
+
+      // 2) SCARICA in sottofondo ciò che è pronto (gruppi completi -> A/B/C).
+      await refreshFeed(context, ctx);
+      const plan = planAssignments(ctx, runStart, false);
+      const tracks = await downloadAssignments(context, project, plan, ctx);
       allTracks.push(...tracks);
-      log.info(
-        `[${project.nome}] lotto ${batchNum} completato. Totale scaricati finora: ${allTracks.length}`
-      );
-    }
 
-    // Passata finale: solo se restano brani generati ma non ancora scaricati.
-    const pendenti = [...ctx.expectedIds].filter(
-      (id) => !ctx.downloadedIds.has(id)
-    );
-    const nonCoperti = readyNotDownloaded(ctx, runStart).length;
-    if (pendenti.length === 0 && nonCoperti === 0) {
-      log.step(`[${project.nome}] tutti i brani scaricati, nessuna attesa finale.`);
-    } else {
-      log.step(
-        `[${project.nome}] passata finale (${pendenti.length} brani ancora in corso)...`
+      // 3) Stato attuale.
+      const attesi = [...ctx.expectedIds].filter(
+        (id) => !ctx.downloadedIds.has(id)
+      ).length;
+      const pronti = readyNotDownloaded(ctx, runStart).length;
+      log.info(
+        `[${project.nome}] stato: inviate ${lanciate}/${totale}, in coda Suno ` +
+          `${queue.length}, scaricati ${allTracks.length}, attesi ${attesi}, pronti ${pronti}`
       );
-      // attesa breve e con uscita anche a conteggio zero, per non bloccarsi
-      await pollBatch(page, project, ctx, runStart, pendenti.length || 1, {
-        maxMs: 3 * 60 * 1000,
-        allowZeroStable: true,
-      });
+
+      // 4) FINE: coda vuota e niente più brani attesi o pronti.
+      if (queue.length === 0 && attesi === 0 && pronti === 0) break;
+
+      // 5) Rileva il PROGRESSO reale: canzoni comparse nel feed (store), scaricate
+      //    o diventate pronte. Se cambia qualcosa, non è uno stallo (Suno sta
+      //    ancora lavorando). Solo il vero silenzio prolungato conta come stallo.
+      const firma = `${ctx.store.size}:${ctx.downloadedIds.size}:${pronti}`;
+      if (firma !== ultimoProgresso) {
+        ultimoProgresso = firma;
+        fermi = 0;
+      } else {
+        fermi += 1;
+      }
+
+      // 6) ANTI-STALLO: brani pronti ma "spaiati" (il gemello non arriva) ->
+      //    dopo qualche ciclo fermo li scarichiamo come singoli nella riserva C.
+      if (pronti > 0 && fermi >= 3) {
+        log.info(
+          `[${project.nome}]   ${pronti} brani pronti ma spaiati: li scarico come singoli (C).`
+        );
+        const fplan = planAssignments(ctx, runStart, true);
+        const ftracks = await downloadAssignments(context, project, fplan, ctx);
+        allTracks.push(...ftracks);
+        fermi = 0;
+      } else if (queue.length === 0 && fermi >= 20) {
+        // Coda finita e da ~5 min non cambia nulla: Suno ha reso meno brani.
+        log.warn(
+          `[${project.nome}]   ${attesi} brani attesi non sono più arrivati (nessun ` +
+            "cambiamento da diversi minuti). Procedo col resto."
+        );
+        break;
+      }
+
+      // 7) Pausa prima del prossimo giro (attesa che i brani maturino).
+      await page.waitForTimeout(SEL.timeouts.pollInterval);
     }
-    const finalPlan = planAssignments(ctx, runStart, true);
-    const finalTracks = await downloadAssignments(context, project, finalPlan, ctx);
-    allTracks.push(...finalTracks);
   } finally {
     detach();
   }
