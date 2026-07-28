@@ -663,6 +663,89 @@ async function downloadAssignments(context, project, assignments, ctx) {
   return tracks;
 }
 
+/**
+ * Attende e SCARICA tutti i brani generati dal lotto appena lanciato, PRIMA di
+ * tornare (e quindi prima che il lotto successivo ricarichi la pagina).
+ *
+ * Ripete "aggiorna stato in background -> scarica ciò che è pronto" finché non
+ * resta nessun brano atteso da scaricare, oppure finché Suno smette di produrne
+ * di nuovi (per non bloccarsi se una generazione ha reso meno brani del previsto).
+ * NON ricarica mai la pagina: se compare un captcha, l'utente ha tutto il tempo.
+ * @returns {Array} i record manifest dei brani scaricati in questo lotto
+ */
+async function drainBatch(context, page, project, ctx, runStart, expectedNew) {
+  const maxMs = SEL.timeouts.pollMaxPerBatch;
+  const start = Date.now();
+  const collected = [];
+  const baseDownloaded = ctx.downloadedIds.size;
+  let lastState = -1;
+  let noProgress = 0;
+
+  log.step(
+    `[${project.nome}]   attendo e SCARICO tutti i ~${expectedNew} brani del lotto ` +
+      "prima di procedere. La pagina NON viene ricaricata finché il lotto non è " +
+      "tutto scaricato: se compare un captcha, risolvilo con calma."
+  );
+
+  while (Date.now() - start < maxMs) {
+    // Aggiorna lo stato in sottofondo (non tocca la pagina visibile).
+    await refreshFeed(context, ctx);
+    await page.waitForTimeout(4000);
+
+    // Scarica subito ciò che è pronto (gruppi completi -> A/B/C accurato).
+    const plan = planAssignments(ctx, runStart, false);
+    const tracks = await downloadAssignments(context, project, plan, ctx);
+    collected.push(...tracks);
+
+    const scaricatiLotto = ctx.downloadedIds.size - baseDownloaded;
+    // Brani ancora attesi: se conosciamo gli id di generazione usiamo quelli,
+    // altrimenti stimiamo dal numero atteso.
+    const attesi =
+      ctx.expectedIds.size > 0
+        ? [...ctx.expectedIds].filter((id) => !ctx.downloadedIds.has(id)).length
+        : Math.max(0, expectedNew - scaricatiLotto);
+    const pronti = readyNotDownloaded(ctx, runStart).length;
+
+    log.info(
+      `[${project.nome}]   lotto: scaricati ${scaricatiLotto}/${expectedNew}, ` +
+        `ancora attesi ${attesi}, pronti da scaricare ora ${pronti} ` +
+        `(${Math.round((Date.now() - start) / 1000)}s)`
+    );
+
+    // Tutto scaricato: niente attesi e niente di pronto in coda.
+    if (attesi === 0 && pronti === 0) {
+      log.info(`[${project.nome}]   lotto scaricato completamente.`);
+      break;
+    }
+
+    // Rilevatore di stallo: se non cambia nulla per un po' E non c'è nulla di
+    // pronto da scaricare, forse Suno ha prodotto meno brani del previsto.
+    const state = attesi * 100000 + pronti;
+    if (state === lastState) {
+      noProgress += 1;
+      if (noProgress >= 6 && pronti === 0) {
+        log.warn(
+          `[${project.nome}]   nessun nuovo brano da un po' (${attesi} attesi non ` +
+            "arrivati: forse Suno ne ha generati meno). Procedo col resto."
+        );
+        break;
+      }
+    } else {
+      noProgress = 0;
+      lastState = state;
+    }
+    await page.waitForTimeout(SEL.timeouts.pollInterval);
+  }
+
+  if (Date.now() - start >= maxMs) {
+    log.warn(
+      `[${project.nome}]   tempo massimo di attesa del lotto raggiunto. ` +
+        "Procedo con quanto scaricato finora."
+    );
+  }
+  return collected;
+}
+
 /** Elabora un progetto: generazione a lotti + download progressivo. */
 async function processProject(context, page, project) {
   ensureDirs(project);
@@ -697,10 +780,17 @@ async function processProject(context, page, project) {
       );
 
       await launchBatch(page, project, batch);
-      await pollBatch(page, project, ctx, runStart, batch.length * 2);
-
-      const plan = planAssignments(ctx, runStart, false);
-      const tracks = await downloadAssignments(context, project, plan, ctx);
+      // Attende e SCARICA tutti i brani di questo lotto PRIMA di passare al
+      // successivo (che ricaricherebbe la pagina). Cosi non si ricarica mai
+      // mentre ci sono ancora brani di questa sessione da scaricare.
+      const tracks = await drainBatch(
+        context,
+        page,
+        project,
+        ctx,
+        runStart,
+        batch.length * 2
+      );
       allTracks.push(...tracks);
       log.info(
         `[${project.nome}] lotto ${batchNum} completato. Totale scaricati finora: ${allTracks.length}`

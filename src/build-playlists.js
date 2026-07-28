@@ -67,6 +67,7 @@ function buildPlaylistsFromFolder(sourceTracks, cPool, numPlaylists, perPlaylist
   const needed = numPlaylists * perPlaylist;
   const pool = shuffle(sourceTracks);
 
+  // Riempi con la riserva C se la sorgente non basta.
   if (pool.length < needed) {
     const mancanti = needed - pool.length;
     const fill = cPool.splice(0, mancanti); // consuma dalla riserva C
@@ -77,21 +78,31 @@ function buildPlaylistsFromFolder(sourceTracks, cPool, numPlaylists, perPlaylist
           `Aggiunti ${fill.length} dalla riserva C.`
       );
     }
-    if (pool.length < needed) {
-      log.warn(
-        `[${nome}] cartella ${etichetta}: anche con la riserva C mancano ` +
-          `${needed - pool.length} brani. Le playlist saranno piu corte.`
-      );
-    }
+  }
+
+  // REGOLA: ogni playlist DEVE avere ESATTAMENTE 'perPlaylist' brani. Creiamo
+  // quindi solo playlist COMPLETE. Se il materiale non basta per tutte quelle
+  // richieste, ne creiamo di meno (meglio poche playlist piene che tante
+  // incomplete). I brani in eccesso (meno di una playlist intera) restano
+  // inutilizzati per questa esecuzione.
+  const completabili = Math.min(
+    numPlaylists,
+    Math.floor(pool.length / perPlaylist)
+  );
+  if (completabili < numPlaylists) {
+    log.warn(
+      `[${nome}] cartella ${etichetta}: con ${pool.length} brani disponibili posso ` +
+        `creare ${completabili}/${numPlaylists} playlist da ${perPlaylist} brani. ` +
+        "Le playlist mancanti NON vengono create (servono piu' brani): rilancia la " +
+        "generazione o abbassa 'braniPerPlaylist'/'daA'/'daB'."
+    );
   }
 
   const playlists = [];
   let idx = 0;
-  for (let p = 0; p < numPlaylists; p++) {
-    const brani = [];
-    for (let k = 0; k < perPlaylist && idx < pool.length; k++) {
-      brani.push(pool[idx++]);
-    }
+  for (let p = 0; p < completabili; p++) {
+    const brani = pool.slice(idx, idx + perPlaylist);
+    idx += perPlaylist;
     // Montaggio in ordine ALFABETICO del nome file.
     brani.sort((a, b) =>
       (a.safeFileName || path.basename(a.abs)).localeCompare(
