@@ -678,7 +678,7 @@ async function drainBatch(context, page, project, ctx, runStart, expectedNew) {
   const start = Date.now();
   const collected = [];
   const baseDownloaded = ctx.downloadedIds.size;
-  let lastState = -1;
+  let lastState = "";
   let noProgress = 0;
 
   log.step(
@@ -692,7 +692,7 @@ async function drainBatch(context, page, project, ctx, runStart, expectedNew) {
     await refreshFeed(context, ctx);
     await page.waitForTimeout(4000);
 
-    // Scarica subito ciò che è pronto (gruppi completi -> A/B/C accurato).
+    // Scarica ciò che è pronto in gruppi COMPLETI (-> A/B/C accurato).
     const plan = planAssignments(ctx, runStart, false);
     const tracks = await downloadAssignments(context, project, plan, ctx);
     collected.push(...tracks);
@@ -704,7 +704,7 @@ async function drainBatch(context, page, project, ctx, runStart, expectedNew) {
       ctx.expectedIds.size > 0
         ? [...ctx.expectedIds].filter((id) => !ctx.downloadedIds.has(id)).length
         : Math.max(0, expectedNew - scaricatiLotto);
-    const pronti = readyNotDownloaded(ctx, runStart).length;
+    let pronti = readyNotDownloaded(ctx, runStart).length;
 
     log.info(
       `[${project.nome}]   lotto: scaricati ${scaricatiLotto}/${expectedNew}, ` +
@@ -718,14 +718,33 @@ async function drainBatch(context, page, project, ctx, runStart, expectedNew) {
       break;
     }
 
-    // Rilevatore di stallo: se non cambia nulla per un po' E non c'è nulla di
-    // pronto da scaricare, forse Suno ha prodotto meno brani del previsto.
-    const state = attesi * 100000 + pronti;
+    // Rilevatore di stallo: se da un po' NON scarichiamo nulla di nuovo e non
+    // arrivano brani nuovi. "state" include gli scaricati: finché scarichiamo,
+    // avanza e non si considera stallo. IMPORTANTE: non lo condizioniamo a
+    // "pronti === 0", altrimenti brani pronti ma spaiati (il gemello non arriva
+    // mai) lo bloccherebbero all'infinito.
+    const state = `${scaricatiLotto}:${attesi}:${pronti}`;
     if (state === lastState) {
       noProgress += 1;
-      if (noProgress >= 6 && pronti === 0) {
+      // Se ci sono brani PRONTI fermi (gruppo mai completato), dopo un po' li
+      // scarichiamo comunque come singoli (finalize -> vanno in C), così non
+      // restiamo bloccati in attesa di un gemello che non arriverà.
+      if (noProgress >= 3 && pronti > 0) {
+        log.info(
+          `[${project.nome}]   ${pronti} brani pronti ma spaiati: li scarico come singoli.`
+        );
+        const fplan = planAssignments(ctx, runStart, true);
+        const ftracks = await downloadAssignments(context, project, fplan, ctx);
+        collected.push(...ftracks);
+        pronti = readyNotDownloaded(ctx, runStart).length;
+        noProgress = 0;
+        lastState = "";
+        continue;
+      }
+      // Nessun avanzamento reale da parecchi cicli: procediamo.
+      if (noProgress >= 8) {
         log.warn(
-          `[${project.nome}]   nessun nuovo brano da un po' (${attesi} attesi non ` +
+          `[${project.nome}]   nessun avanzamento da un po' (${attesi} attesi non ` +
             "arrivati: forse Suno ne ha generati meno). Procedo col resto."
         );
         break;
