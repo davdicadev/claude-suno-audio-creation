@@ -34,10 +34,17 @@ const SEL = require("./lib/suno-selectors");
 const log = require("./lib/logger");
 
 function parseArgs(argv) {
-  const args = { loginOnly: false, project: null, config: null, profile: null };
+  const args = {
+    loginOnly: false,
+    downloadOnly: false,
+    project: null,
+    config: null,
+    profile: null,
+  };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--login-only") args.loginOnly = true;
+    else if (a === "--download-only") args.downloadOnly = true;
     else if (a === "--project") args.project = argv[++i];
     else if (a === "--config") args.config = argv[++i];
     else if (a === "--profile") args.profile = argv[++i];
@@ -672,6 +679,97 @@ async function downloadAssignments(context, project, assignments, ctx) {
 }
 
 /**
+ * SOLO DOWNLOAD (nessun credito speso): scarica i brani GIÀ presenti nella
+ * libreria Suno, senza generarne di nuovi. Utile per recuperare i brani dei
+ * test già pagati e per verificare i download a costo zero.
+ *
+ * Non usa gli id di generazione (non ci sono): raccoglie i brani dal feed della
+ * libreria scorrendo la pagina, li accoppia per titolo+tempo (A/B, singoli in C)
+ * e li scarica in parallelo. Salta quelli già presenti su disco.
+ */
+async function downloadLibrary(context, page, project) {
+  ensureDirs(project);
+  const ctx = {
+    store: new Map(),
+    expectedIds: new Set(),
+    generations: [],
+    downloadedIds: new Set(),
+  };
+  const detach = attachClipCollector(context, ctx);
+  const allTracks = [];
+
+  log.step(
+    `[${project.nome}] SOLO DOWNLOAD: leggo la libreria Suno e scarico i brani ` +
+      "già esistenti. NON genero nulla di nuovo: nessun credito speso."
+  );
+
+  try {
+    // Carica una pagina autenticata: il feed della libreria viene intercettato.
+    await ensureCreatePage(page, project);
+
+    const maxMs = 8 * 60 * 1000;
+    const start = Date.now();
+    let ultimoTrovati = -1;
+    let fermi = 0;
+
+    while (Date.now() - start < maxMs) {
+      // Aggiorna il feed in sottofondo e prova a caricarne altro scorrendo.
+      await refreshFeed(context, ctx);
+      try {
+        await page.mouse.wheel(0, 6000);
+      } catch (_) {
+        /* la pagina potrebbe non essere scrollabile: ignora */
+      }
+      await page.waitForTimeout(2500);
+
+      // Accoppia i brani pronti (per titolo+tempo) e scarica quelli nuovi.
+      const readyClips = [...ctx.store.values()].filter(
+        (c) => isReady(c) && !ctx.downloadedIds.has(c.id)
+      );
+      const assignments = [];
+      pairByTitleTime(readyClips, assignments, true); // A/B, singoli -> C
+      const tracks = await downloadAssignments(context, project, assignments, ctx);
+      allTracks.push(...tracks);
+
+      const trovati = ctx.store.size;
+      log.info(
+        `[${project.nome}] libreria: trovati ${trovati} brani, scaricati ${allTracks.length}`
+      );
+
+      // Ferma quando non compaiono più brani nuovi da un po'.
+      if (trovati === ultimoTrovati) {
+        fermi += 1;
+        if (fermi >= 6) break;
+      } else {
+        fermi = 0;
+        ultimoTrovati = trovati;
+      }
+    }
+  } finally {
+    detach();
+  }
+
+  const manifest = {
+    project: project.nome,
+    sunoProfilo: project.sunoProfilo,
+    runAt: new Date().toISOString(),
+    keywordsTitoli: project.keywordsTitoli,
+    playlist: project.playlist,
+    tracks: allTracks,
+    soloDownload: true,
+  };
+  manifestLib.save(project.dirs.manifest, manifest);
+  const counts = allTracks.reduce(
+    (a, t) => ((a[t.folder] = (a[t.folder] || 0) + 1), a),
+    {}
+  );
+  log.step(
+    `[${project.nome}] SOLO DOWNLOAD completato (${allTracks.length} brani: ` +
+      `A=${counts.A || 0} B=${counts.B || 0} C=${counts.C || 0}). Nessun credito speso.`
+  );
+}
+
+/**
  * Elabora un progetto con una PIPELINE: tiene sempre piena la coda di Suno
  * (fino a ~maxGenerazioniPerBatch generazioni in lavorazione insieme) e scarica
  * i brani in sottofondo man mano che sono pronti, SENZA mai ricaricare la
@@ -935,9 +1033,17 @@ async function main() {
         );
         current = { profile: project.sunoProfilo, context, page };
       }
-      await processProject(current.context, current.page, project);
+      if (args.downloadOnly) {
+        await downloadLibrary(current.context, current.page, project);
+      } else {
+        await processProject(current.context, current.page, project);
+      }
     }
-    log.step("Fase generazione/download completata.");
+    log.step(
+      args.downloadOnly
+        ? "Solo-download completato (nessun credito speso)."
+        : "Fase generazione/download completata."
+    );
   } finally {
     if (current) {
       try {
