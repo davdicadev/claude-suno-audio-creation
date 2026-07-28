@@ -921,7 +921,13 @@ async function openContextForProfile(cfg, profile) {
 async function main() {
   const args = parseArgs(process.argv);
   const cfg = loadConfig(args.config);
+  fs.mkdirSync(cfg.baseDir, { recursive: true });
   fs.mkdirSync(cfg.browserProfilesDir, { recursive: true });
+
+  // Log su file: con n8n l'output del comando NON si vede finché non finisce.
+  // Aprendo questo file (o con `tail -f` / `Get-Content -Wait`) segui i progressi.
+  log.setLogFile(path.join(cfg.baseDir, "suno-log.txt"));
+  log.info(`Log in tempo reale: ${path.join(cfg.baseDir, "suno-log.txt")}`);
 
   // --- Modalita solo login ---
   if (args.loginOnly) {
