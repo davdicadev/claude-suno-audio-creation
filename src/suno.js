@@ -807,13 +807,16 @@ async function processProject(context, page, project) {
     const queue = buildClickQueue(project);
     const totale = queue.length;
     let lanciate = 0;
-    let fermi = 0; // cicli SENZA alcun progresso, per l'anti-stallo
-    let deadlock = 0; // reload tentati per sbloccare brani "attesi" non rilevati
-    let ultimoProgresso = ""; // firma dello stato per rilevare lo stallo vero
+    let fermi = 0; // cicli SENZA progresso REALE (download o nuovo pronto)
+    let reloadFatti = 0; // reload tentati per sbloccare brani "attesi" non rilevati
+    let ultimoScaricati = 0; // n. scaricati al giro precedente
+    let ultimoPronti = 0; // n. pronti al giro precedente
     let ultimoStrumentale = null; // per toccare il toggle solo quando cambia
 
-    // Non far crescere all'infinito i brani in attesa di download: se il
-    // download resta indietro, si smette di generare e si recupera prima.
+    // Non accumulare troppi brani PRONTI ma non ancora scaricati: se il download
+    // resta indietro si smette di generare e si recupera prima. (Si basa sui
+    // brani pronti, non sugli "attesi", così eventuali id fantasma di Suno non
+    // falsano il conteggio.)
     const backlogMax = maxInFlight * 3;
 
     // Carica la pagina Create UNA volta sola: da qui in poi non si ricarica.
@@ -825,7 +828,7 @@ async function processProject(context, page, project) {
       while (
         queue.length > 0 &&
         inFlightSongs(ctx, runStart, lanciate) < maxInFlight &&
-        ctx.expectedIds.size - ctx.downloadedIds.size < backlogMax
+        readyNotDownloaded(ctx, runStart).length < backlogMax
       ) {
         const click = queue.shift();
         await submitGeneration(
@@ -864,14 +867,17 @@ async function processProject(context, page, project) {
       // 4) FINE: coda vuota e niente più brani attesi o pronti.
       if (queue.length === 0 && attesi === 0 && pronti === 0) break;
 
-      // 5) Rileva il PROGRESSO reale: canzoni comparse nel feed (store), scaricate
-      //    o diventate pronte. Se cambia qualcosa, non è uno stallo (Suno sta
-      //    ancora lavorando). Solo il vero silenzio prolungato conta come stallo.
-      const firma = `${ctx.store.size}:${ctx.downloadedIds.size}:${pronti}`;
-      if (firma !== ultimoProgresso) {
-        ultimoProgresso = firma;
+      // 5) Progresso REALE = qualcosa scaricato o diventato pronto in questo giro.
+      //    IMPORTANTE: NON conta come progresso il feed che si popola di brani
+      //    ancora "in attesa" (un reload aggiunge voci senza farci avanzare):
+      //    altrimenti lo stallo non verrebbe mai rilevato.
+      const progresso =
+        ctx.downloadedIds.size > ultimoScaricati || pronti > ultimoPronti;
+      ultimoScaricati = ctx.downloadedIds.size;
+      ultimoPronti = pronti;
+      if (progresso) {
         fermi = 0;
-        deadlock = 0;
+        reloadFatti = 0;
       } else {
         fermi += 1;
       }
@@ -886,22 +892,23 @@ async function processProject(context, page, project) {
         const ftracks = await downloadAssignments(context, project, fplan, ctx);
         allTracks.push(...ftracks);
         fermi = 0;
-      } else if (attesi > 0 && pronti === 0 && fermi >= 4) {
-        // 6b) DEADLOCK: ci sono brani attesi ma NESSUNO risulta pronto da un po'.
-        //     Di solito Suno li ha finiti ma il feed non li mostra più. Ricarico
-        //     la pagina per forzare un feed fresco (non c'è nulla in download da
-        //     disturbare, quindi il reload è sicuro).
-        deadlock += 1;
-        if (deadlock <= 3) {
+      } else if (pronti === 0 && attesi > 0 && fermi >= 6) {
+        // 6b) STALLO: brani attesi ma nessuno pronto da un po'. Due casi:
+        if (queue.length > 0 && reloadFatti < 2) {
+          //  - a metà run: forse il feed non si aggiorna. UN paio di reload per
+          //    forzare un feed fresco (sicuro: non c'è nulla in download).
+          reloadFatti += 1;
           log.warn(
             `[${project.nome}]   nessun brano pronto da un po' (${attesi} attesi): ` +
-              "ricarico la pagina per aggiornare lo stato dei brani su Suno."
+              `ricarico la pagina per aggiornare il feed (tentativo ${reloadFatti}).`
           );
           await ensureCreatePage(page, project);
           await refreshFeed(context, ctx);
         } else {
-          // Il reload non ha aiutato: quei brani non sono più rilevabili. Li
-          // abbandoniamo per sbloccare generazione e download del resto.
+          //  - coda finita, oppure i reload non hanno aiutato: quei brani non
+          //    arriveranno (spesso sono id "fantasma" restituiti da Suno che non
+          //    diventano mai canzoni). Li ABBANDONIAMO e proseguiamo/finiamo,
+          //    invece di ricaricare all'infinito.
           let n = 0;
           for (const id of ctx.expectedIds) {
             if (
@@ -914,19 +921,12 @@ async function processProject(context, page, project) {
             }
           }
           log.warn(
-            `[${project.nome}]   ${n} brani non più rilevabili nel feed dopo vari ` +
-              "tentativi: li salto per non bloccare il resto."
+            `[${project.nome}]   ${n} brani attesi non sono arrivati: li salto e ` +
+              "proseguo (probabili id fantasma di Suno)."
           );
-          deadlock = 0;
+          reloadFatti = 0;
         }
         fermi = 0;
-      } else if (queue.length === 0 && fermi >= 20) {
-        // Coda finita e da ~5 min non cambia nulla: Suno ha reso meno brani.
-        log.warn(
-          `[${project.nome}]   ${attesi} brani attesi non sono più arrivati (nessun ` +
-            "cambiamento da diversi minuti). Procedo col resto."
-        );
-        break;
       }
 
       // 7) Pausa prima del prossimo giro (attesa che i brani maturino).
