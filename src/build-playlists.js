@@ -206,11 +206,20 @@ function analyzeTrack(cfg, file) {
   return { real, leading, trailingStart };
 }
 
+// Quota MINIMA del brano da conservare dopo il taglio del silenzio. La musica
+// molto silenziosa (fade-out, passaggi soft di neo-soul/bossa/lofi) viene spesso
+// scambiata per "silenzio" da silencedetect: senza questo limite un brano di 3
+// minuti verrebbe tagliato a pochi secondi. Se il taglio rimuoverebbe piu' di
+// (1 - questa quota) del brano, e' quasi certamente un falso positivo e NON
+// tagliamo. Il taglio di vero silenzio a inizio/fine resta sempre sotto questa
+// soglia (di solito pochi secondi), quindi non viene mai bloccato.
+const MIN_FRAZIONE_BRANO = 0.7;
+
 /** Calcola i punti di taglio (inizio/fine) per lasciare max N secondi di silenzio. */
 function computeCuts(cfg, a) {
   let startCut = 0;
   let endCut = a.real;
-  if (cfg.tagliaSilenzio) {
+  if (cfg.tagliaSilenzio && a.real > 0) {
     if (a.leading > cfg.maxSilenzioSecondi) {
       startCut = a.leading - cfg.maxSilenzioSecondi;
     }
@@ -223,12 +232,17 @@ function computeCuts(cfg, a) {
   }
   if (endCut > a.real) endCut = a.real;
   if (startCut < 0) startCut = 0;
-  // sicurezza: se il taglio azzererebbe il brano, tieni tutto
-  if (endCut - startCut < 0.5) {
-    startCut = 0;
-    endCut = a.real;
+
+  const durTagliata = endCut - startCut;
+  // Sicurezza anti-falso-positivo: se il taglio rimuove troppo (musica soft
+  // scambiata per silenzio) o azzererebbe il brano, tieni il brano INTERO.
+  if (a.real > 0 && durTagliata < a.real * MIN_FRAZIONE_BRANO) {
+    return { startCut: 0, endCut: a.real, dur: a.real, sospetto: true };
   }
-  return { startCut, endCut, dur: endCut - startCut };
+  if (durTagliata < 0.5) {
+    return { startCut: 0, endCut: a.real, dur: a.real, sospetto: true };
+  }
+  return { startCut, endCut, dur: durTagliata, sospetto: false };
 }
 
 /**
@@ -366,10 +380,12 @@ function processProject(cfg, project, reencode) {
       );
       const segments = [];
       let tagliati = 0;
+      let sospetti = 0;
       for (const t of job.brani) {
         const a = analyzeTrack(cfg, t.abs);
         const cuts = computeCuts(cfg, a);
-        if (cuts.startCut > 0.05 || cuts.endCut < a.real - 0.05) tagliati += 1;
+        if (cuts.sospetto) sospetti += 1;
+        else if (cuts.startCut > 0.05 || cuts.endCut < a.real - 0.05) tagliati += 1;
         segments.push({
           abs: t.abs,
           display: t.display,
@@ -379,7 +395,11 @@ function processProject(cfg, project, reencode) {
         });
       }
       log.info(
-        `[${project.nome}]   ${job.name}: silenzio tagliato in ${tagliati}/${segments.length} brani. Ricodifico...`
+        `[${project.nome}]   ${job.name}: silenzio tagliato in ${tagliati}/${segments.length} brani` +
+          (sospetti
+            ? `; ${sospetti} brani tenuti INTERI (taglio sospetto, musica soft scambiata per silenzio)`
+            : "") +
+          ". Ricodifico..."
       );
       concatAccurate(cfg, segments, mp3);
       writeTracklist(segments, txt, job.name);
