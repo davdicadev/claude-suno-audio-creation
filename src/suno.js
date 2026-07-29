@@ -492,7 +492,8 @@ function readyNotDownloaded(ctx, runStart) {
 function inFlightSongs(ctx, runStart, lanciate) {
   const done = ctx.downloadedIds.size;
   const ready = readyNotDownloaded(ctx, runStart).length;
-  return Math.max(0, lanciate * 2 - done - ready);
+  const persi = ctx.abbandonati ? ctx.abbandonati.size : 0;
+  return Math.max(0, lanciate * 2 - done - ready - persi);
 }
 
 // Ordina i clip di una coppia/gruppo e assegna A / B / C.
@@ -783,6 +784,9 @@ async function processProject(context, page, project) {
     expectedIds: new Set(),
     generations: [],
     downloadedIds: new Set(),
+    // Brani "attesi" che Suno ha finito ma che non riusciamo più a rilevare nel
+    // feed: dopo vari tentativi li abbandoniamo per non bloccare la pipeline.
+    abbandonati: new Set(),
   };
   const detach = attachClipCollector(context, ctx);
   const runStart = Date.now();
@@ -804,6 +808,7 @@ async function processProject(context, page, project) {
     const totale = queue.length;
     let lanciate = 0;
     let fermi = 0; // cicli SENZA alcun progresso, per l'anti-stallo
+    let deadlock = 0; // reload tentati per sbloccare brani "attesi" non rilevati
     let ultimoProgresso = ""; // firma dello stato per rilevare lo stallo vero
     let ultimoStrumentale = null; // per toccare il toggle solo quando cambia
 
@@ -846,9 +851,9 @@ async function processProject(context, page, project) {
       const tracks = await downloadAssignments(context, project, plan, ctx);
       allTracks.push(...tracks);
 
-      // 3) Stato attuale.
+      // 3) Stato attuale (esclude i brani abbandonati perché non rilevabili).
       const attesi = [...ctx.expectedIds].filter(
-        (id) => !ctx.downloadedIds.has(id)
+        (id) => !ctx.downloadedIds.has(id) && !ctx.abbandonati.has(id)
       ).length;
       const pronti = readyNotDownloaded(ctx, runStart).length;
       log.info(
@@ -866,19 +871,54 @@ async function processProject(context, page, project) {
       if (firma !== ultimoProgresso) {
         ultimoProgresso = firma;
         fermi = 0;
+        deadlock = 0;
       } else {
         fermi += 1;
       }
 
-      // 6) ANTI-STALLO: brani pronti ma "spaiati" (il gemello non arriva) ->
-      //    dopo qualche ciclo fermo li scarichiamo come singoli nella riserva C.
       if (pronti > 0 && fermi >= 3) {
+        // 6a) Brani pronti ma "spaiati" (il gemello non arriva): dopo qualche
+        //     ciclo fermo li scarichiamo come singoli nella riserva C.
         log.info(
           `[${project.nome}]   ${pronti} brani pronti ma spaiati: li scarico come singoli (C).`
         );
         const fplan = planAssignments(ctx, runStart, true);
         const ftracks = await downloadAssignments(context, project, fplan, ctx);
         allTracks.push(...ftracks);
+        fermi = 0;
+      } else if (attesi > 0 && pronti === 0 && fermi >= 4) {
+        // 6b) DEADLOCK: ci sono brani attesi ma NESSUNO risulta pronto da un po'.
+        //     Di solito Suno li ha finiti ma il feed non li mostra più. Ricarico
+        //     la pagina per forzare un feed fresco (non c'è nulla in download da
+        //     disturbare, quindi il reload è sicuro).
+        deadlock += 1;
+        if (deadlock <= 3) {
+          log.warn(
+            `[${project.nome}]   nessun brano pronto da un po' (${attesi} attesi): ` +
+              "ricarico la pagina per aggiornare lo stato dei brani su Suno."
+          );
+          await ensureCreatePage(page, project);
+          await refreshFeed(context, ctx);
+        } else {
+          // Il reload non ha aiutato: quei brani non sono più rilevabili. Li
+          // abbandoniamo per sbloccare generazione e download del resto.
+          let n = 0;
+          for (const id of ctx.expectedIds) {
+            if (
+              !ctx.downloadedIds.has(id) &&
+              !ctx.abbandonati.has(id) &&
+              !isReady(ctx.store.get(id))
+            ) {
+              ctx.abbandonati.add(id);
+              n += 1;
+            }
+          }
+          log.warn(
+            `[${project.nome}]   ${n} brani non più rilevabili nel feed dopo vari ` +
+              "tentativi: li salto per non bloccare il resto."
+          );
+          deadlock = 0;
+        }
         fermi = 0;
       } else if (queue.length === 0 && fermi >= 20) {
         // Coda finita e da ~5 min non cambia nulla: Suno ha reso meno brani.
