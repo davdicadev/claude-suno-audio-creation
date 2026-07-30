@@ -263,8 +263,11 @@ function concatAccurate(cfg, segments, outFile) {
   fs.mkdirSync(partsDir, { recursive: true });
 
   const parts = [];
+  const used = []; // segmenti effettivamente inclusi (per la tracklist)
   try {
-    // 1) Ritaglia/normalizza ogni brano in un MP3 temporaneo uniforme.
+    // 1) Ritaglia/normalizza ogni brano in un MP3 temporaneo uniforme. Se un
+    //    file e' corrotto/troncato (download incompleto) lo SALTIAMO con un
+    //    avviso, invece di far fallire tutto il montaggio.
     for (let i = 0; i < segments.length; i++) {
       const s = segments[i];
       const part = path.join(partsDir, `p${String(i).padStart(4, "0")}.mp3`);
@@ -283,10 +286,23 @@ function concatAccurate(cfg, segments, outFile) {
       );
       const r = spawnSync(cfg.ffmpegPath, args, { encoding: "utf8" });
       if (r.error || r.status !== 0) {
-        const dett = r.error ? r.error.message : String(r.stderr || "").slice(-300);
-        throw new Error(`FFMPEG taglio fallito (${s.abs}): ${dett}`);
+        const dett = r.error ? r.error.message : String(r.stderr || "").slice(-200);
+        log.warn(
+          `  brano SALTATO (file corrotto/illeggibile): ${s.abs}\n` +
+            `    -> ${String(dett).replace(/\s+/g, " ").trim()}\n` +
+            "    Cancella questo file e riscaricalo (o rigeneralo) per includerlo."
+        );
+        continue;
       }
       parts.push(part);
+      used.push(s);
+    }
+
+    if (parts.length === 0) {
+      throw new Error(
+        `nessun brano valido da montare (${outFile}): tutti i file sono ` +
+          "risultati corrotti/illeggibili."
+      );
     }
 
     // 2) Unisci i temporanei (stesso formato) con copia diretta: robusto.
@@ -312,6 +328,7 @@ function concatAccurate(cfg, segments, outFile) {
     // Pulisci i temporanei.
     fs.rmSync(partsDir, { recursive: true, force: true });
   }
+  return used;
 }
 
 /** Montaggio veloce (copia diretta, tempi imprecisi) - solo se richiesto. */
@@ -448,9 +465,17 @@ function processProject(cfg, project, reencode) {
             : "") +
           ". Ricodifico..."
       );
-      concatAccurate(cfg, segments, mp3);
-      writeTracklist(segments, txt, job.name);
-      writeTracklist(segments, txtUrl, job.name, urlOpts);
+      // concatAccurate ritorna i soli segmenti inclusi (salta i file corrotti):
+      // la tracklist deve rispecchiare esattamente il montaggio.
+      const inclusi = concatAccurate(cfg, segments, mp3);
+      if (inclusi.length < segments.length) {
+        log.warn(
+          `[${project.nome}]   ${job.name}: ${segments.length - inclusi.length} brani ` +
+            "saltati perche' corrotti; tracklist allineata al montaggio."
+        );
+      }
+      writeTracklist(inclusi, txt, job.name);
+      writeTracklist(inclusi, txtUrl, job.name, urlOpts);
     }
     log.info(`[${project.nome}]   -> ${mp3}`);
     log.info(`[${project.nome}]   -> ${txt}`);
