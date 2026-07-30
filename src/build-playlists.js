@@ -246,43 +246,71 @@ function computeCuts(cfg, a) {
 }
 
 /**
- * Monta i segmenti (con inpoint/outpoint) RICODIFICANDO: cosi i tempi sono
- * esatti e il silenzio in eccesso viene tagliato in un unico passaggio.
+ * Monta i segmenti con tempi ESATTI e taglio del silenzio, in modo AFFIDABILE.
+ *
+ * IMPORTANTE: NON si usa il concat demuxer con inpoint/outpoint + ricodifica.
+ * Quella combinazione, su tanti MP3, produce timestamp non monotoni e FFMPEG
+ * scarta interi brani silenziosamente (il montaggio usciva con 1 o pochi brani
+ * invece di 50). Qui invece:
+ *   1) ogni brano viene ritagliato/normalizzato in un file temporaneo MP3
+ *      uniforme (stesso codec/bitrate/sample-rate);
+ *   2) i temporanei, tutti nello stesso formato, si uniscono con "-c copy":
+ *      concatenazione semplice e robusta, senza ricodifica finale.
  */
 function concatAccurate(cfg, segments, outFile) {
-  const listFile = outFile + ".txt";
-  const lines = [];
-  for (const s of segments) {
-    const p = s.abs.split(path.sep).join("/").replace(/'/g, "'\\''");
-    lines.push(`file '${p}'`);
-    lines.push(`inpoint ${s.startCut.toFixed(3)}`);
-    lines.push(`outpoint ${s.endCut.toFixed(3)}`);
-  }
-  fs.writeFileSync(listFile, lines.join("\n") + "\n", "utf8");
-  const args = [
-    "-y",
-    "-hide_banner",
-    "-loglevel",
-    "error",
-    "-f",
-    "concat",
-    "-safe",
-    "0",
-    "-i",
-    listFile,
-    "-c:a",
-    "libmp3lame",
-    "-b:a",
-    "192k",
-    outFile,
-  ];
-  const r = spawnSync(cfg.ffmpegPath, args, { encoding: "utf8" });
+  const partsDir = outFile + ".parts";
+  fs.rmSync(partsDir, { recursive: true, force: true });
+  fs.mkdirSync(partsDir, { recursive: true });
+
+  const parts = [];
   try {
-    fs.unlinkSync(listFile);
-  } catch (_) {}
-  if (r.error || r.status !== 0) {
-    const dett = r.error ? r.error.message : String(r.stderr || "").slice(-400);
-    throw new Error(`FFMPEG concat fallito (${outFile}): ${dett}`);
+    // 1) Ritaglia/normalizza ogni brano in un MP3 temporaneo uniforme.
+    for (let i = 0; i < segments.length; i++) {
+      const s = segments[i];
+      const part = path.join(partsDir, `p${String(i).padStart(4, "0")}.mp3`);
+      const dur = Math.max(0.1, s.endCut - s.startCut);
+      const args = ["-y", "-hide_banner", "-loglevel", "error"];
+      // -ss PRIMA di -i: seek veloce; -t: durata esatta del segmento.
+      if (s.startCut > 0.01) args.push("-ss", s.startCut.toFixed(3));
+      args.push("-i", s.abs, "-t", dur.toFixed(3));
+      // Formato uniforme, cosi il concat finale in copia e' sicuro.
+      args.push(
+        "-ar", "44100",
+        "-ac", "2",
+        "-c:a", "libmp3lame",
+        "-b:a", "192k",
+        part
+      );
+      const r = spawnSync(cfg.ffmpegPath, args, { encoding: "utf8" });
+      if (r.error || r.status !== 0) {
+        const dett = r.error ? r.error.message : String(r.stderr || "").slice(-300);
+        throw new Error(`FFMPEG taglio fallito (${s.abs}): ${dett}`);
+      }
+      parts.push(part);
+    }
+
+    // 2) Unisci i temporanei (stesso formato) con copia diretta: robusto.
+    const listFile = outFile + ".txt";
+    const lines = parts.map((p) => {
+      const q = p.split(path.sep).join("/").replace(/'/g, "'\\''");
+      return `file '${q}'`;
+    });
+    fs.writeFileSync(listFile, lines.join("\n") + "\n", "utf8");
+    const r = spawnSync(
+      cfg.ffmpegPath,
+      ["-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", listFile, "-c", "copy", outFile],
+      { encoding: "utf8" }
+    );
+    try {
+      fs.unlinkSync(listFile);
+    } catch (_) {}
+    if (r.error || r.status !== 0) {
+      const dett = r.error ? r.error.message : String(r.stderr || "").slice(-400);
+      throw new Error(`FFMPEG unione fallita (${outFile}): ${dett}`);
+    }
+  } finally {
+    // Pulisci i temporanei.
+    fs.rmSync(partsDir, { recursive: true, force: true });
   }
 }
 
