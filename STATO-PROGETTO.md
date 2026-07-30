@@ -25,7 +25,7 @@ Pipeline in 3 fasi (nodi n8n = comandi `node`):
 
 - **Fase 1 — `src/suno.js`**: generazione + download (Playwright). È il cuore e la parte più complessa.
 - **Fase 2 — `src/rewrite-titles.js`**: riscrittura titoli con Claude (`@anthropic-ai/sdk`, modello `claude-haiku-4-5`).
-- **Fase 3 — `src/build-playlists.js`**: montaggio FFMPEG + tracklist.
+- **Fase 3 — `src/build-playlists.js`**: montaggio FFMPEG + tracklist. Per ogni playlist scrive DUE tracklist: `<nome>.txt` (timestamp + titolo) e `<nome>_con-url.txt` (aggiunge l'URL Suno `https://suno.com/song/<id>` di ogni brano).
 - Orchestratore CLI: `src/run.js` (lancia le 3 fasi).
 
 Librerie condivise:

@@ -336,12 +336,25 @@ function concatFast(cfg, brani, outFile) {
   }
 }
 
-/** Scrive la tracklist usando le durate (gia' tagliate) dei segmenti. */
-function writeTracklist(segments, outFile, totaleLabel) {
+/** Costruisce l'URL della pagina Suno di un brano dal suo id. */
+function sunoSongUrl(sunoUrl, id) {
+  const base = String(sunoUrl || "https://suno.com").replace(/\/+$/, "");
+  return `${base}/song/${id}`;
+}
+
+/**
+ * Scrive la tracklist usando le durate (gia' tagliate) dei segmenti.
+ * Con opts.urlBase aggiunge, dopo il titolo, l'URL Suno del brano.
+ */
+function writeTracklist(segments, outFile, totaleLabel, opts = {}) {
   let cursor = 0;
   const righe = [];
   for (const s of segments) {
-    righe.push(`${formatTime(cursor)} - ${s.display}`);
+    let riga = `${formatTime(cursor)} - ${s.display}`;
+    if (opts.urlBase && s.id) {
+      riga += ` - ${sunoSongUrl(opts.urlBase, s.id)}`;
+    }
+    righe.push(riga);
     cursor += s.dur || 0;
   }
   const header = totaleLabel
@@ -390,17 +403,22 @@ function processProject(cfg, project, reencode) {
     }
     const mp3 = path.join(project.dirs.export, `${job.name}.mp3`);
     const txt = path.join(project.dirs.tracklist, `${job.name}.txt`);
+    // Seconda tracklist identica ma con l'URL Suno di ogni brano accanto al titolo.
+    const txtUrl = path.join(project.dirs.tracklist, `${job.name}_con-url.txt`);
+    const urlOpts = { urlBase: cfg.sunoUrl };
 
     if (veloce) {
       log.info(
         `[${project.nome}] monto ${job.name} (${job.brani.length} brani, modalita' veloce)`
       );
       const segs = job.brani.map((t) => ({
+        id: t.id,
         display: t.display,
         dur: runFfprobeDuration(cfg.ffprobePath, t.abs) || 0,
       }));
       concatFast(cfg, job.brani, mp3);
       writeTracklist(segs, txt, job.name);
+      writeTracklist(segs, txtUrl, job.name, urlOpts);
     } else {
       log.info(
         `[${project.nome}] monto ${job.name} (${job.brani.length} brani): ` +
@@ -415,6 +433,7 @@ function processProject(cfg, project, reencode) {
         if (cuts.sospetto) sospetti += 1;
         else if (cuts.startCut > 0.05 || cuts.endCut < a.real - 0.05) tagliati += 1;
         segments.push({
+          id: t.id,
           abs: t.abs,
           display: t.display,
           startCut: cuts.startCut,
@@ -431,9 +450,11 @@ function processProject(cfg, project, reencode) {
       );
       concatAccurate(cfg, segments, mp3);
       writeTracklist(segments, txt, job.name);
+      writeTracklist(segments, txtUrl, job.name, urlOpts);
     }
     log.info(`[${project.nome}]   -> ${mp3}`);
     log.info(`[${project.nome}]   -> ${txt}`);
+    log.info(`[${project.nome}]   -> ${txtUrl}`);
   }
   log.step(`[${project.nome}] playlist e tracklist completate.`);
 }
