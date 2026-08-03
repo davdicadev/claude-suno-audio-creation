@@ -616,6 +616,11 @@ function sanitizeRaw(title) {
 // bloccati dietro a uno lento e la coda di "pronti" non si accumula.
 const DOWNLOAD_CONCURRENCY = 6;
 
+// Quanti brani scaricare al massimo per ogni giro del ciclo, per tornare spesso
+// a rifornire Suno di generazioni (i brani pronti in eccesso si scaricano ai
+// giri successivi). Multiplo di 2 per non spezzare le coppie A/B.
+const MAX_SCARICO_PER_CICLO = 12;
+
 /** Scarica le assegnazioni IN PARALLELO e ritorna i record per il manifest. */
 async function downloadAssignments(context, project, assignments, ctx) {
   // Prepara i job unici (salta i già scaricati).
@@ -813,22 +818,20 @@ async function processProject(context, page, project) {
     let ultimoPronti = 0; // n. pronti al giro precedente
     let ultimoStrumentale = null; // per toccare il toggle solo quando cambia
 
-    // Non accumulare troppi brani PRONTI ma non ancora scaricati: se il download
-    // resta indietro si smette di generare e si recupera prima. (Si basa sui
-    // brani pronti, non sugli "attesi", così eventuali id fantasma di Suno non
-    // falsano il conteggio.)
-    const backlogMax = maxInFlight * 3;
-
     // Carica la pagina Create UNA volta sola: da qui in poi non si ricarica.
     await ensureCreatePage(page, project);
 
     while (true) {
-      // 1) RIEMPI: invia nuove generazioni finché la coda di Suno è piena, ma
-      //    senza accumulare troppi brani ancora da scaricare (backlogMax).
+      // 1) RIEMPI: tieni SEMPRE piena la coda di Suno (~maxInFlight canzoni in
+      //    lavorazione = maxGenerazioniPerBatch generazioni). NON si frena in
+      //    base ai download: i brani "pronti ma non ancora scaricati" restano al
+      //    sicuro nella libreria Suno e vengono scaricati in parallelo; frenare
+      //    la generazione perché i download sono lenti farebbe rallentare Suno
+      //    (generava 1-2 brani alla volta dopo un po'). L'unico limite è quanti
+      //    brani Suno sta effettivamente ancora generando.
       while (
         queue.length > 0 &&
-        inFlightSongs(ctx, runStart, lanciate) < maxInFlight &&
-        readyNotDownloaded(ctx, runStart).length < backlogMax
+        inFlightSongs(ctx, runStart, lanciate) < maxInFlight
       ) {
         const click = queue.shift();
         await submitGeneration(
@@ -849,8 +852,13 @@ async function processProject(context, page, project) {
       }
 
       // 2) SCARICA in sottofondo ciò che è pronto (gruppi completi -> A/B/C).
+      //    Scarichiamo al massimo un piccolo lotto per giro, così torniamo
+      //    spesso a rifornire Suno di nuove generazioni (i download sono lenti:
+      //    se ne scaricassimo tanti in un colpo, Suno resterebbe senza lavoro nel
+      //    frattempo). Il resto dei brani pronti viene preso ai giri successivi.
       await refreshFeed(context, ctx);
-      const plan = planAssignments(ctx, runStart, false);
+      const planCompleto = planAssignments(ctx, runStart, false);
+      const plan = planCompleto.slice(0, MAX_SCARICO_PER_CICLO);
       const tracks = await downloadAssignments(context, project, plan, ctx);
       allTracks.push(...tracks);
 
