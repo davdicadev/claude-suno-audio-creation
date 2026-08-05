@@ -93,13 +93,14 @@ Da n8n: nodo Impostazioni con `repoDir` e `configPath` assoluti; i 3 Execute Com
 
 ## 7. Come funziona la Fase 1 adesso (importante)
 
-`src/suno.js` usa una **PIPELINE** (non più lotti separati):
+`src/suno.js` usa un **MODELLO A LOTTI** deterministico (`processProject` + helper `attendiEScaricaLotto`). Scelto dall'utente dopo che la "pipeline" continua tendeva a strozzare la generazione nel tempo.
 - Carica `/create` **una volta**, poi **non ricarica** la pagina.
-- Tiene sempre ~`maxGenerazioniPerBatch*2` canzoni "in lavorazione" su Suno; appena una coppia è pronta la **scarica** e lancia una nuova generazione.
-- **Download in parallelo** (6 alla volta) con timeout 60s e 3 tentativi (l'endpoint audio di Suno è lento/instabile).
+- Ripete: invia `maxGenerazioniPerBatch` (~10) generazioni → **attende** che siano generate e ne **scarica** i ~20 brani → lotto successivo, fino a coprire `fabbisogno.clickTotali`.
+- `attendiEScaricaLotto` chiude il lotto quando ha scaricato ~`batch.length*2` brani, oppure dopo qualche giro senza progressi (Suno può rendere meno brani o restituire id "fantasma" che non diventano canzoni); i pronti "spaiati" vanno in C.
+- **Download in parallelo** (`DOWNLOAD_CONCURRENCY=6`) con timeout 60s e 3 tentativi (l'endpoint audio di Suno è lento/instabile).
 - Discovery dei brani via intercettazione delle risposte del feed di Suno (nessuna API con chiave) + `refreshFeed` in background.
 - Accoppiamento A/B dai gruppi di generazione; fallback per titolo+tempo; singoli → C.
-- **Anti-stallo**: se ci sono brani "attesi" ma nessuno "pronto" per un po', a coda vuota vengono **abbandonati** (spesso sono id "fantasma" restituiti da Suno che non diventano mai canzoni); a metà run si tentano max 2 reload. Evita i blocchi infiniti.
+- NB: il **download** è la parte più lenta (endpoint Suno). Il modello a lotti è prevedibile ma tra un lotto e l'altro Suno resta un po' fermo mentre si scaricano gli ultimi brani; è il compromesso voluto.
 
 ## 8. Cronologia problemi risolti (per contesto)
 

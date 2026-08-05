@@ -483,19 +483,6 @@ function readyNotDownloaded(ctx, runStart) {
   );
 }
 
-/**
- * Stima quante canzoni sono "in volo" (generazioni inviate ma non ancora
- * pronte né scaricate). Usa il numero di generazioni inviate (lanciate*2 brani
- * attesi) meno quelle già pronte/scaricate: cosi il conteggio è affidabile
- * anche se la risposta di generazione tarda a essere intercettata.
- */
-function inFlightSongs(ctx, runStart, lanciate) {
-  const done = ctx.downloadedIds.size;
-  const ready = readyNotDownloaded(ctx, runStart).length;
-  const persi = ctx.abbandonati ? ctx.abbandonati.size : 0;
-  return Math.max(0, lanciate * 2 - done - ready - persi);
-}
-
 // Ordina i clip di una coppia/gruppo e assegna A / B / C.
 function assignGroupClips(clips, result) {
   const t = (c) => (c.createdAt ? Date.parse(c.createdAt) : 0) || 0;
@@ -615,11 +602,6 @@ function sanitizeRaw(title) {
 // per un singolo brano: scaricando in parallelo, i brani veloci non restano
 // bloccati dietro a uno lento e la coda di "pronti" non si accumula.
 const DOWNLOAD_CONCURRENCY = 6;
-
-// Quanti brani scaricare al massimo per ogni giro del ciclo, per tornare spesso
-// a rifornire Suno di generazioni (i brani pronti in eccesso si scaricano ai
-// giri successivi). Multiplo di 2 per non spezzare le coppie A/B.
-const MAX_SCARICO_PER_CICLO = 12;
 
 /** Scarica le assegnazioni IN PARALLELO e ritorna i record per il manifest. */
 async function downloadAssignments(context, project, assignments, ctx) {
@@ -776,11 +758,96 @@ async function downloadLibrary(context, page, project) {
 }
 
 /**
- * Elabora un progetto con una PIPELINE: tiene sempre piena la coda di Suno
- * (fino a ~maxGenerazioniPerBatch generazioni in lavorazione insieme) e scarica
- * i brani in sottofondo man mano che sono pronti, SENZA mai ricaricare la
- * pagina. Cosi non ci sono attese morte tra un "lotto" e l'altro: appena un
- * brano è pronto viene scaricato e si libera spazio per lanciarne un altro.
+ * Attende che il lotto appena inviato sia generato e ne scarica i brani.
+ * Scarica le coppie complete (A/B) man mano che sono pronte; quando ha
+ * scaricato ~target brani (o Suno smette di produrne di nuovi) ritorna.
+ * @returns {number} quanti brani ha scaricato in questo lotto.
+ */
+async function attendiEScaricaLotto(
+  context,
+  page,
+  project,
+  ctx,
+  runStart,
+  target,
+  allTracks
+) {
+  const start = Date.now();
+  const maxMs = SEL.timeouts.pollMaxPerBatch;
+  const baseline = allTracks.length;
+  let ultimo = allTracks.length;
+  let fermi = 0;
+
+  log.step(
+    `[${project.nome}]   attendo che Suno generi il lotto (~${target} brani) e li scarico. ` +
+      "Se compare un captcha, risolvilo con calma."
+  );
+
+  while (Date.now() - start < maxMs) {
+    await refreshFeed(context, ctx);
+
+    // Scarica le coppie complete pronte (A/B).
+    const plan = planAssignments(ctx, runStart, false);
+    const tracks = await downloadAssignments(context, project, plan, ctx);
+    allTracks.push(...tracks);
+
+    const scaricatiLotto = allTracks.length - baseline;
+    const pronti = readyNotDownloaded(ctx, runStart).length;
+    log.info(
+      `[${project.nome}]   lotto: scaricati ${scaricatiLotto}/${target}, ` +
+        `pronti ${pronti} (${Math.round((Date.now() - start) / 1000)}s)`
+    );
+
+    // Lotto completo: abbiamo scaricato tutti (o quasi) i brani attesi.
+    if (scaricatiLotto >= target) {
+      log.info(`[${project.nome}]   lotto completo (${scaricatiLotto}/${target}).`);
+      return scaricatiLotto;
+    }
+
+    // Rileva progresso reale (qualcosa scaricato).
+    if (allTracks.length > ultimo) {
+      fermi = 0;
+      ultimo = allTracks.length;
+    } else {
+      fermi += 1;
+    }
+
+    // Se da qualche giro non scarichiamo ma ci sono brani pronti "spaiati"
+    // (il gemello non arriva), scarichiamoli come singoli nella riserva C.
+    if (fermi >= 3 && pronti > 0) {
+      log.info(
+        `[${project.nome}]   ${pronti} brani pronti ma spaiati: li scarico come singoli (C).`
+      );
+      const fplan = planAssignments(ctx, runStart, true);
+      const ft = await downloadAssignments(context, project, fplan, ctx);
+      allTracks.push(...ft);
+      fermi = 0;
+      continue;
+    }
+
+    // Fermo a lungo e nulla di pronto: Suno ha reso meno brani del previsto
+    // (o id fantasma). Chiudo il lotto con quello che ho.
+    if (fermi >= 8) {
+      log.warn(
+        `[${project.nome}]   lotto chiuso a ${scaricatiLotto}/${target}: nessun nuovo ` +
+          "brano da un po' (Suno ne ha resi meno o sono id fantasma)."
+      );
+      return scaricatiLotto;
+    }
+
+    await page.waitForTimeout(SEL.timeouts.pollInterval);
+  }
+
+  log.warn(
+    `[${project.nome}]   tempo massimo del lotto raggiunto; procedo con quanto scaricato.`
+  );
+  return allTracks.length - baseline;
+}
+
+/**
+ * Elabora un progetto a LOTTI: invia maxGenerazioniPerBatch generazioni, ATTENDE
+ * che siano generate e ne scarica i ~20 brani, poi passa al lotto successivo,
+ * fino a coprire il fabbisogno. Modello semplice e prevedibile.
  */
 async function processProject(context, page, project) {
   ensureDirs(project);
@@ -797,43 +864,37 @@ async function processProject(context, page, project) {
   const runStart = Date.now();
   const allTracks = [];
 
-  // Numero massimo di CANZONI in lavorazione contemporaneamente (Suno ne
-  // elabora ~10 generazioni insieme = ~20 canzoni).
-  const maxInFlight = project.maxGenerazioniPerBatch * 2;
-
   log.step(
     `=== Progetto '${project.nome}' (account: ${project.sunoProfilo}): ` +
-      `${project.fabbisogno.clickTotali} generazioni, fino a ` +
-      `${project.maxGenerazioniPerBatch} in parallelo, obiettivo ` +
-      `A=${project.fabbisogno.bisognoA} B=${project.fabbisogno.bisognoB} ===`
+      `${project.fabbisogno.clickTotali} generazioni a lotti di ` +
+      `${project.maxGenerazioniPerBatch}, obiettivo A=${project.fabbisogno.bisognoA} ` +
+      `B=${project.fabbisogno.bisognoB} ===`
   );
 
   try {
     const queue = buildClickQueue(project);
     const totale = queue.length;
+    const batchSize = project.maxGenerazioniPerBatch;
+    const totBatch = Math.ceil(totale / batchSize);
     let lanciate = 0;
-    let fermi = 0; // cicli SENZA progresso REALE (download o nuovo pronto)
-    let reloadFatti = 0; // reload tentati per sbloccare brani "attesi" non rilevati
-    let ultimoScaricati = 0; // n. scaricati al giro precedente
-    let ultimoPronti = 0; // n. pronti al giro precedente
+    let numBatch = 0;
     let ultimoStrumentale = null; // per toccare il toggle solo quando cambia
 
     // Carica la pagina Create UNA volta sola: da qui in poi non si ricarica.
     await ensureCreatePage(page, project);
 
-    while (true) {
-      // 1) RIEMPI: tieni SEMPRE piena la coda di Suno (~maxInFlight canzoni in
-      //    lavorazione = maxGenerazioniPerBatch generazioni). NON si frena in
-      //    base ai download: i brani "pronti ma non ancora scaricati" restano al
-      //    sicuro nella libreria Suno e vengono scaricati in parallelo; frenare
-      //    la generazione perché i download sono lenti farebbe rallentare Suno
-      //    (generava 1-2 brani alla volta dopo un po'). L'unico limite è quanti
-      //    brani Suno sta effettivamente ancora generando.
-      while (
-        queue.length > 0 &&
-        inFlightSongs(ctx, runStart, lanciate) < maxInFlight
-      ) {
-        const click = queue.shift();
+    // MODELLO A LOTTI: invia batchSize generazioni -> attende che siano generate
+    // e ne scarica i ~batchSize*2 brani -> lotto successivo. Semplice e
+    // prevedibile: nessun conteggio "in volo" che si sfasa.
+    while (queue.length > 0) {
+      numBatch += 1;
+      const batch = queue.splice(0, batchSize);
+      log.step(
+        `[${project.nome}] === LOTTO ${numBatch}/${totBatch}: invio ${batch.length} generazioni ===`
+      );
+
+      // 1) Invia TUTTE le generazioni del lotto in rapida successione.
+      for (const click of batch) {
         await submitGeneration(
           page,
           project,
@@ -842,103 +903,27 @@ async function processProject(context, page, project) {
         );
         ultimoStrumentale = click.strumentale;
         lanciate += 1;
-        // Aggiorna subito lo stato: la risposta di generazione popola expectedIds.
         await refreshFeed(context, ctx);
         log.info(
-          `[${project.nome}] generazione ${lanciate}/${totale} inviata ` +
-            `(strumentale: ${click.strumentale ? "si" : "no"}; in lavorazione su Suno: ` +
-            `~${inFlightSongs(ctx, runStart, lanciate)} brani)`
+          `[${project.nome}]   generazione ${lanciate}/${totale} inviata ` +
+            `(strumentale: ${click.strumentale ? "si" : "no"})`
         );
       }
 
-      // 2) SCARICA in sottofondo ciò che è pronto (gruppi completi -> A/B/C).
-      //    Scarichiamo al massimo un piccolo lotto per giro, così torniamo
-      //    spesso a rifornire Suno di nuove generazioni (i download sono lenti:
-      //    se ne scaricassimo tanti in un colpo, Suno resterebbe senza lavoro nel
-      //    frattempo). Il resto dei brani pronti viene preso ai giri successivi.
-      await refreshFeed(context, ctx);
-      const planCompleto = planAssignments(ctx, runStart, false);
-      const plan = planCompleto.slice(0, MAX_SCARICO_PER_CICLO);
-      const tracks = await downloadAssignments(context, project, plan, ctx);
-      allTracks.push(...tracks);
-
-      // 3) Stato attuale (esclude i brani abbandonati perché non rilevabili).
-      const attesi = [...ctx.expectedIds].filter(
-        (id) => !ctx.downloadedIds.has(id) && !ctx.abbandonati.has(id)
-      ).length;
-      const pronti = readyNotDownloaded(ctx, runStart).length;
-      log.info(
-        `[${project.nome}] stato: inviate ${lanciate}/${totale}, in coda Suno ` +
-          `${queue.length}, scaricati ${allTracks.length}, attesi ${attesi}, pronti ${pronti}`
+      // 2) Attende il completamento del lotto e scarica i suoi brani (~20).
+      const scaricati = await attendiEScaricaLotto(
+        context,
+        page,
+        project,
+        ctx,
+        runStart,
+        batch.length * 2,
+        allTracks
       );
-
-      // 4) FINE: coda vuota e niente più brani attesi o pronti.
-      if (queue.length === 0 && attesi === 0 && pronti === 0) break;
-
-      // 5) Progresso REALE = qualcosa scaricato o diventato pronto in questo giro.
-      //    IMPORTANTE: NON conta come progresso il feed che si popola di brani
-      //    ancora "in attesa" (un reload aggiunge voci senza farci avanzare):
-      //    altrimenti lo stallo non verrebbe mai rilevato.
-      const progresso =
-        ctx.downloadedIds.size > ultimoScaricati || pronti > ultimoPronti;
-      ultimoScaricati = ctx.downloadedIds.size;
-      ultimoPronti = pronti;
-      if (progresso) {
-        fermi = 0;
-        reloadFatti = 0;
-      } else {
-        fermi += 1;
-      }
-
-      if (pronti > 0 && fermi >= 3) {
-        // 6a) Brani pronti ma "spaiati" (il gemello non arriva): dopo qualche
-        //     ciclo fermo li scarichiamo come singoli nella riserva C.
-        log.info(
-          `[${project.nome}]   ${pronti} brani pronti ma spaiati: li scarico come singoli (C).`
-        );
-        const fplan = planAssignments(ctx, runStart, true);
-        const ftracks = await downloadAssignments(context, project, fplan, ctx);
-        allTracks.push(...ftracks);
-        fermi = 0;
-      } else if (pronti === 0 && attesi > 0 && fermi >= 6) {
-        // 6b) STALLO: brani attesi ma nessuno pronto da un po'. Due casi:
-        if (queue.length > 0 && reloadFatti < 2) {
-          //  - a metà run: forse il feed non si aggiorna. UN paio di reload per
-          //    forzare un feed fresco (sicuro: non c'è nulla in download).
-          reloadFatti += 1;
-          log.warn(
-            `[${project.nome}]   nessun brano pronto da un po' (${attesi} attesi): ` +
-              `ricarico la pagina per aggiornare il feed (tentativo ${reloadFatti}).`
-          );
-          await ensureCreatePage(page, project);
-          await refreshFeed(context, ctx);
-        } else {
-          //  - coda finita, oppure i reload non hanno aiutato: quei brani non
-          //    arriveranno (spesso sono id "fantasma" restituiti da Suno che non
-          //    diventano mai canzoni). Li ABBANDONIAMO e proseguiamo/finiamo,
-          //    invece di ricaricare all'infinito.
-          let n = 0;
-          for (const id of ctx.expectedIds) {
-            if (
-              !ctx.downloadedIds.has(id) &&
-              !ctx.abbandonati.has(id) &&
-              !isReady(ctx.store.get(id))
-            ) {
-              ctx.abbandonati.add(id);
-              n += 1;
-            }
-          }
-          log.warn(
-            `[${project.nome}]   ${n} brani attesi non sono arrivati: li salto e ` +
-              "proseguo (probabili id fantasma di Suno)."
-          );
-          reloadFatti = 0;
-        }
-        fermi = 0;
-      }
-
-      // 7) Pausa prima del prossimo giro (attesa che i brani maturino).
-      await page.waitForTimeout(SEL.timeouts.pollInterval);
+      log.step(
+        `[${project.nome}] === LOTTO ${numBatch}/${totBatch} completato: ` +
+          `${scaricati} brani. Totale scaricati finora: ${allTracks.length} ===`
+      );
     }
   } finally {
     detach();
