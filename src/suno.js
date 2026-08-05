@@ -777,6 +777,10 @@ async function attendiEScaricaLotto(
   const baseline = allTracks.length;
   let ultimo = allTracks.length;
   let fermi = 0;
+  // Suno spesso rende qualche brano in meno del previsto (o id "fantasma" che
+  // non diventano mai canzoni). Non ha senso aspettare a lungo l'ultimo o i due
+  // mancanti: se davvero arrivano tardi, il lotto SUCCESSIVO li scarica comunque.
+  const marginePersi = Math.max(2, Math.round(target * 0.15)); // ~3 su 20
 
   log.step(
     `[${project.nome}]   attendo che Suno generi il lotto (~${target} brani) e li scarico. ` +
@@ -798,13 +802,13 @@ async function attendiEScaricaLotto(
         `pronti ${pronti} (${Math.round((Date.now() - start) / 1000)}s)`
     );
 
-    // Lotto completo: abbiamo scaricato tutti (o quasi) i brani attesi.
+    // Lotto completo: abbiamo scaricato tutti i brani attesi.
     if (scaricatiLotto >= target) {
       log.info(`[${project.nome}]   lotto completo (${scaricatiLotto}/${target}).`);
       return scaricatiLotto;
     }
 
-    // Rileva progresso reale (qualcosa scaricato).
+    // Rileva progresso reale (qualcosa scaricato in questo giro).
     if (allTracks.length > ultimo) {
       fermi = 0;
       ultimo = allTracks.length;
@@ -825,12 +829,31 @@ async function attendiEScaricaLotto(
       continue;
     }
 
-    // Fermo a lungo e nulla di pronto: Suno ha reso meno brani del previsto
-    // (o id fantasma). Chiudo il lotto con quello che ho.
-    if (fermi >= 8) {
+    // Quasi completo (mancano pochi, quasi certi id fantasma) e fermo da un paio
+    // di giri: chiudo SUBITO senza sprecare minuti ad aspettare l'ultimo brano.
+    if (scaricatiLotto >= target - marginePersi && pronti === 0 && fermi >= 2) {
+      log.info(
+        `[${project.nome}]   lotto chiuso a ${scaricatiLotto}/${target}: i pochi mancanti ` +
+          "non arrivano (verranno presi dopo o sono id fantasma). Procedo."
+      );
+      return scaricatiLotto;
+    }
+
+    // Abbiamo iniziato a scaricare ma è fermo da parecchio: chiudo comunque.
+    if (scaricatiLotto > 0 && fermi >= 8) {
       log.warn(
         `[${project.nome}]   lotto chiuso a ${scaricatiLotto}/${target}: nessun nuovo ` +
           "brano da un po' (Suno ne ha resi meno o sono id fantasma)."
+      );
+      return scaricatiLotto;
+    }
+
+    // Non è ancora arrivato NULLA da ~5 min: qualcosa non va (probabile captcha
+    // non risolto o Suno non produce). Chiudo per non restare appeso.
+    if (scaricatiLotto === 0 && fermi >= 20) {
+      log.warn(
+        `[${project.nome}]   nessun brano scaricato dopo ~5 min: chiudo il lotto. ` +
+          "Se c'era un captcha, la prossima volta risolvilo nella finestra del browser."
       );
       return scaricatiLotto;
     }
