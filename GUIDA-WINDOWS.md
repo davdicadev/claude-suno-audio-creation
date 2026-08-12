@@ -35,19 +35,64 @@ Lascia il browser aperto mentre lavora. Il resto della guida serve solo per il *
 Apri PowerShell e verifica cosa hai già:
 
 ```powershell
-node -v      # deve stampare v18 o superiore
+node -v      # deve stampare v22.22 o superiore (richiesto da n8n, vedi sotto)
 git --version
 ffmpeg -version
 ffprobe -version
+n8n --version   # se n8n è già installato via npm
 ```
 
-- **Node.js**: se manca, scaricalo da https://nodejs.org (versione LTS). Se usi già n8n via npm, ce l'hai.
+- **Node.js**: le versioni recenti di n8n richiedono **Node ≥ 22.22** (Node 18 non è più supportato da n8n, anche se questo progetto da solo si accontenta di Node 18+). Consigliato: installa/aggiorna a **Node 24 LTS** ("Krypton", l'LTS attuale ad agosto 2026) da https://nodejs.org — copre sia n8n che l'automazione. Se hai una versione più vecchia già installata, il nuovo installer la sostituisce.
 - **Git**: se manca, https://git-scm.com (oppure scarica il progetto come ZIP, vedi Passo 1).
 - **FFMPEG + ffprobe**: se mancano, con Scoop:
   ```powershell
   scoop install ffmpeg
   ```
   (Scoop lo usi già: il tuo vecchio workflow puntava a `...\scoop\shims\ffprobe.exe`.)
+
+### Aggiorna n8n all'ultima versione
+
+Se hai installato n8n globalmente via npm (il caso più comune su Windows):
+
+```powershell
+npm install -g n8n@latest
+n8n --version
+```
+
+Non serve inseguire esattamente la **2.26.5** che hai sull'altro PC: qualunque versione **2.x** recente va bene (l'ultima disponibile ad agosto 2026 è la **2.34.x**), il nodo Execute Command **c'è in tutte** — vedi il punto sotto, è una questione di configurazione, non di versione.
+
+> Se invece usi l'**app desktop** di n8n, aggiorna da lì (Impostazioni → controlla aggiornamenti) o reinstalla l'ultima versione da n8n.io.
+
+> ⚠️ **Nota per il futuro:** n8n **v3.0** (previsto ottobre 2026) eliminerà l'installazione via npm/npx a favore del solo **Docker**. Non riguarda l'aggiornamento di oggi, ma se in futuro `npm install -g n8n` smette di funzionare, dovrai passare a Docker Desktop.
+
+### Il nodo "Execute Command": non è una questione di versione
+
+Dalla versione **2.0** in poi — quindi anche nella 2.26.5 dell'altro PC e anche nell'ultima 2.34.x — n8n **disabilita di default**, per motivi di sicurezza, due nodi: **Execute Command** e **Local File Trigger**. Il nodo è sempre incluso nel pacchetto: semplicemente non compare nella lista finché non lo riattivi con una variabile d'ambiente. Quindi non serve cercare "l'ultima versione che ce l'ha ancora": basta riattivarlo, in qualsiasi versione recente.
+
+Su Windows (PowerShell), variabile d'ambiente **permanente**:
+
+```powershell
+setx NODES_EXCLUDE "[]"
+```
+
+Questo riabilita tutti i nodi normalmente esclusi (compreso Execute Command). Se preferisci lasciare disabilitato solo Local File Trigger:
+
+```powershell
+setx NODES_EXCLUDE "[\"n8n-nodes-base.localFileTrigger\"]"
+```
+
+Poi:
+1. **Chiudi e riapri PowerShell** (`setx` non aggiorna la sessione già aperta).
+2. **Riavvia n8n** (chiudi il processo e rilancialo con `n8n`).
+3. Apri un workflow e cerca "Execute Command" nel pannello dei nodi: ora deve comparire.
+
+> Se sull'altro PC il nodo funziona senza che tu ricordi di aver mai impostato questa variabile, probabilmente quell'installazione è più vecchia della 2.0 e non è mai stata aggiornata da allora — un motivo in più per fare l'aggiornamento qui con la variabile già pronta, così il nodo non sparisce al prossimo `npm update`.
+
+### Dipendenze del progetto (Suno automation)
+
+- **Node.js**: come sopra, ≥ 22.22 soddisfa sia n8n sia questo progetto.
+- **Git**, **FFMPEG/ffprobe**: come sopra.
+- Le librerie del progetto (`@anthropic-ai/sdk`, `playwright`) si installano/aggiornano con `npm install` dentro la cartella del progetto (Passo 2): le versioni in `package.json` sono già quelle testate, non serve toccarle a mano.
 
 ---
 
@@ -207,6 +252,8 @@ L'automazione elabora **tutti** i progetti con `"attivo": true`, in sequenza, ca
 
 ## Passo 8 — (Opzionale) Da n8n
 
+> Il workflow usa 3 nodi **Execute Command**: se non l'hai già fatto, riabilitali una volta sola come spiegato nel Passo 0 (`setx NODES_EXCLUDE "[]"`, riapri PowerShell, riavvia n8n) — altrimenti l'import del workflow segnala i nodi come "unrecognized".
+
 1. Apri n8n → **Workflows → Import from File** → scegli `n8n\suno-audio-automation.json`.
 2. Apri il nodo **Impostazioni** e imposta:
    - `repoDir` = `C:\n8n\suno-audio-automation`
@@ -263,6 +310,8 @@ C:\n8n\suno\
 | `ffmpeg`/`ffprobe` non riconosciuti | Installa con `scoop install ffmpeg`, oppure metti in `projects.json` il percorso completo agli `.exe`. |
 | Il browser non parte / errore Playwright | Riesegui `npx playwright install chromium`. |
 | Login Google: "questo browser potrebbe non essere sicuro" | Google blocca l'automazione. L'automazione usa già il tuo **Google Chrome** con i flag anti-blocco; se persiste, accedi a Suno con **email/password** o **Discord/Apple** invece che con Google. Vedi la sezione "Login Google bloccato" qui sotto. |
+| Il nodo **Execute Command** non compare nel pannello nodi di n8n | Dalla v2.0 n8n lo disabilita di default per sicurezza. Imposta `setx NODES_EXCLUDE "[]"`, **chiudi e riapri PowerShell**, riavvia n8n (vedi Passo 0). |
+| n8n si rifiuta di avviarsi dopo l'aggiornamento / errori legati a Node | Controlla `node -v`: le versioni recenti di n8n richiedono **Node ≥ 22.22**. Aggiorna Node da https://nodejs.org (consigliata la LTS 24, "Krypton") e riprova. |
 | La generazione non trova un elemento | Aggiorna il selettore in `src\lib\suno-selectors.js` (Passo 9). |
 | Montaggio FFMPEG fallisce | Lancia `node src/build-playlists.js --reencode` (ricodifica invece di copiare). |
 | Credito Claude esaurito | Ricarica su console.anthropic.com e rilancia solo le fasi mancanti: `node src/run.js --phase titles,playlists`. |
