@@ -50,18 +50,18 @@ n8n --version   # se n8n è già installato via npm
   ```
   (Scoop lo usi già: il tuo vecchio workflow puntava a `...\scoop\shims\ffprobe.exe`.)
 
-### Aggiorna n8n all'ultima versione
+### Aggiorna n8n (stessa versione dell'altro PC)
 
-Se hai installato n8n globalmente via npm (il caso più comune su Windows):
+Se hai installato n8n globalmente via npm (il caso più comune su Windows), per allineare la versione a quella già in uso sull'altro PC installa la versione **esatta** invece di "latest":
 
 ```powershell
-npm install -g n8n@latest
-n8n --version
+npm install -g n8n@2.26.5
+n8n --version      # deve mostrare 2.26.5
 ```
 
-Non serve inseguire esattamente la **2.26.5** che hai sull'altro PC: qualunque versione **2.x** recente va bene (l'ultima disponibile ad agosto 2026 è la **2.34.x**), il nodo Execute Command **c'è in tutte** — vedi il punto sotto, è una questione di configurazione, non di versione.
+> Nota: per il nodo Execute Command **non era necessario** puntare a questa versione precisa — è disabilitato di default (da riattivare con `NODES_EXCLUDE`, vedi sotto) su **qualunque** versione 2.x, comprese le più recenti (l'ultima ad agosto 2026 è la 2.34.x). Pinnare la 2.26.5 qui è una scelta per avere lo **stesso comportamento identico su entrambi i PC**, non un requisito tecnico per quel nodo. Per aggiornare in futuro a una versione più recente: `npm install -g n8n@latest`.
 
-> Se invece usi l'**app desktop** di n8n, aggiorna da lì (Impostazioni → controlla aggiornamenti) o reinstalla l'ultima versione da n8n.io.
+> Se invece usi l'**app desktop** di n8n, la versione esatta non è selezionabile dall'interfaccia: per pinnarla serve disinstallare l'app e installare n8n via npm come sopra.
 
 > ⚠️ **Nota per il futuro:** n8n **v3.0** (previsto ottobre 2026) eliminerà l'installazione via npm/npx a favore del solo **Docker**. Non riguarda l'aggiornamento di oggi, ma se in futuro `npm install -g n8n` smette di funzionare, dovrai passare a Docker Desktop.
 
