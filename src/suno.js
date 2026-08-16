@@ -792,7 +792,7 @@ async function diagnosticaStudio(context, page, project) {
   }
   log.info(`   brani trovati: ${brani.length}`);
   for (const b of brani.slice(0, 10)) {
-    log.info(`   - ${b.titolo}  (${b.id})`);
+    log.info(`   - [${b.durata || "?:??"}] ${b.titolo}  (${b.id})`);
   }
   if (brani.length === 0) {
     await saveDebugShot(page, project, "diagnostica-lista-brani");
@@ -808,12 +808,20 @@ async function diagnosticaStudio(context, page, project) {
 
   log.step("3/3 — apro il brano in Studio dal menu (…) della pagina /create");
   try {
-    const { url } = await studio.apriInStudioDaCreate(page, {
+    const { url, caricamento } = await studio.apriInStudioDaCreate(page, {
       songId: scelto.id,
       titolo: scelto.titolo,
+      durata: scelto.durata,
       prefisso: "   ",
     });
-    log.step(`DIAGNOSTICA OK: Studio aperto su ${url}. Nessun credito speso.`);
+    log.step(
+      `DIAGNOSTICA OK: Studio aperto su ${url}` +
+        (caricamento
+          ? `, brano caricato in ${caricamento.secondi}s ` +
+            `(${caricamento.pronto ? "segnali confermati" : "segnali NON confermati"})`
+          : "") +
+        ". Nessun credito speso."
+    );
   } catch (e) {
     await saveDebugShot(page, project, "diagnostica-studio");
     log.error(`   apertura in Studio fallita: ${e.message}`);

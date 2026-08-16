@@ -90,10 +90,37 @@ document.addEventListener("click", e=>{
 });
 </script></body></html>`;
 
+// Finto Studio: riproduce il caso segnalato dall'utente. Il bottone Export c'e'
+// SUBITO, ma la traccia arriva dopo: prima una richiesta lenta (l'audio), poi
+// la forma d'onda disegnata sul canvas e la durata del brano in pagina.
 const STUDIO = `<!doctype html><html><head><meta charset="utf-8"><title>Studio</title></head>
-<body><h1>Suno Studio</h1><div class="timeline-root" aria-label="Timeline">tracce</div></body></html>`;
+<body>
+<h1>Suno Studio</h1>
+<div class="timeline-root" aria-label="Timeline">
+  <canvas id="onda" width="800" height="120"></canvas>
+  <div id="durata"></div>
+</div>
+<button id="export">Export</button>
+<script>
+// L'audio ci mette 3 secondi ad arrivare: fino ad allora l'export sarebbe vuoto.
+fetch("/audio-lento").then(()=>{
+  const c=document.getElementById("onda"), x=c.getContext("2d");
+  x.fillStyle="#3a7";
+  for(let i=0;i<800;i+=3) x.fillRect(i, 60-Math.random()*50, 2, Math.random()*100);
+  document.getElementById("durata").textContent = "2:57";
+});
+// Rumore di fondo (telemetria): non deve MAI impedire di dichiarare la rete ferma.
+setInterval(()=>fetch("/analytics/ping").catch(()=>{}), 400);
+</script></body></html>`;
 
 const server = http.createServer((req, res) => {
+  if (req.url.startsWith("/audio-lento")) {
+    return setTimeout(() => res.end("audio"), 3000);
+  }
+  if (req.url.startsWith("/analytics")) {
+    res.setHeader("Content-Type", "text/plain");
+    return res.end("ok");
+  }
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.end(req.url.startsWith("/studio") ? STUDIO : PAGE);
 });

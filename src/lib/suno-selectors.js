@@ -93,6 +93,40 @@ module.exports = {
       dialogo: 6000, // comparsa della finestra di scelta
       caricamento: 180000, // caricamento di Studio (e' pesante)
     },
+
+    // Quando il BRANO e' davvero dentro Studio (non basta essere sulla pagina:
+    // il bottone Export compare subito, ma esportare in quel momento darebbe un
+    // file sbagliato o vuoto). Vedi attendiBranoCaricato() in suno-studio.js.
+    pronto: {
+      attesaMinima: 1200, // non dichiarare mai "pronto" prima di tanto
+      finestraStabile: 2500, // i segnali devono reggere per questo tempo di fila
+      reteFermaMs: 1500, // nessuna richiesta in volo da almeno tanto
+      richiestaVecchiaMs: 20000, // oltre: e' uno stream/long-poll, non "in volo"
+      timeout: 120000,
+
+      // Traffico di servizio da NON considerare: non c'entra col caricamento
+      // del brano e altrimenti la rete non sarebbe mai "ferma".
+      ignoraRete: [
+        "analytics",
+        "segment",
+        "sentry",
+        "posthog",
+        "datadog",
+        "clarity",
+        "intercom",
+        "/ping",
+        "/telemetry",
+        "/events",
+      ],
+
+      // Bottone Export: lo cerchiamo solo per LEGGERE se e' attivo o disattivo
+      // (segnale utile, ma da solo non basta: spesso e' attivo da subito).
+      exportButton: [
+        'button:has-text("Export")',
+        '[aria-label*="export" i]',
+        'button:has-text("Esporta")',
+      ],
+    },
   },
 
   // Endpoint interni che la pagina stessa chiama e da cui leggiamo i brani.

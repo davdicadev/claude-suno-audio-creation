@@ -63,11 +63,28 @@ function ok(nome, cond, extra) {
     const res = await studio.apriInStudioDaCreate(page, {
       songId: brani[0].id,
       titolo: brani[0].titolo,
+      durata: "2:57", // il finto Studio la mostra solo a brano caricato
       prefisso: "      [test] ",
     });
     const durata = Date.now() - t0;
     ok("apriInStudioDaCreate arriva su Studio", /\/studio\//.test(res.url), res.url);
     ok("senza attese morte (< 15s)", durata < 15000, `${durata}ms`);
+
+    // 3b) il brano dev'essere DENTRO, non basta la pagina aperta.
+    //     Nel finto Studio l'audio arriva dopo 3s: se uscissimo appena vediamo
+    //     il bottone Export (che c'e' subito) esporteremmo il vuoto.
+    ok("non esce prima che il brano ci sia (>3s)", durata > 3000, `${durata}ms`);
+    ok("il caricamento e' stato confermato dai segnali", res.caricamento && res.caricamento.pronto === true);
+    ok(
+      "ha visto la forma d'onda o la durata del brano",
+      res.caricamento &&
+        (res.caricamento.segnali.canvasDisegnati > 0 || res.caricamento.segnali.durataVisibile),
+      JSON.stringify(res.caricamento && res.caricamento.segnali)
+    );
+    ok(
+      "Export era gia' presente da subito (il caso segnalato)",
+      res.caricamento && res.caricamento.segnali.presente === true
+    );
 
     // 4) variante con la finestra di scelta che compare in ritardo
     const pageD = await ctx.newPage();

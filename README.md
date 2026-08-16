@@ -236,6 +236,31 @@ Per provare tutto il percorso **senza toccare Suno** (gira su una pagina finta):
 npm run test:studio
 ```
 
+### Quando il brano è davvero pronto per l'export
+
+Il bottone **Export** compare quasi subito, ma in quel momento la traccia non è
+ancora caricata: esportare lì darebbe un file sbagliato o vuoto. `Export`
+presente non è quindi un segnale utilizzabile, e nemmeno "pagina caricata":
+Studio è un'applicazione a pagina singola, il documento risulta pronto molto
+prima del brano, e restano aperte connessioni di servizio che non finiscono mai.
+
+`attendiBranoCaricato()` aspetta invece che valga **tutto insieme**, e per
+qualche secondo di fila (così una quiete momentanea a metà caricamento non
+inganna):
+
+- un segnale di **contenuto** — audio decodificato, *oppure* forma d'onda
+  disegnata sul canvas, *oppure* la durata attesa del brano visibile in pagina;
+- la **rete ferma** da qualche secondo, ignorando telemetria e stream.
+
+Il timeout è solo una rete di sicurezza: se scatta, il lavoro prosegue ma il log
+lo dice chiaramente. Ogni ~2 secondi viene scritta una riga con lo stato di ogni
+segnale, utile per tarare i parametri in `studio.pronto`
+(`src/lib/suno-selectors.js`):
+
+```
+audio 0/1 | canvas disegnati 1/3 | durata attesa sì | rete 0 in volo, ferma da 2.8s | Export attivo
+```
+
 ### Da n8n
 
 1. Importa `n8n/suno-audio-automation.json` in n8n.

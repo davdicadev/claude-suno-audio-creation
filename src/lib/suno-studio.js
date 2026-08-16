@@ -86,7 +86,16 @@ async function elencaBrani(page) {
       const testo = (a.innerText || a.getAttribute("title") || "")
         .replace(/\s+/g, " ")
         .trim();
-      out.push({ id: m[1], titolo: testo.slice(0, 80) || "(senza titolo)" });
+      // La durata (es. "2:57") serve dopo: e' il segnale piu' preciso per
+      // capire che il brano e' stato caricato dentro Studio.
+      const riga = a.closest('[role="row"], li, tr, div');
+      const testoRiga = riga ? riga.innerText || "" : "";
+      const d = testoRiga.match(/\b(\d{1,2}:[0-5]\d)\b/);
+      out.push({
+        id: m[1],
+        titolo: testo.slice(0, 80) || "(senza titolo)",
+        durata: d ? d[1] : null,
+      });
     }
     return out;
   });
@@ -223,6 +232,237 @@ async function inStudio(page) {
   return false;
 }
 
+/* ------------------------------------------------------------------ *
+ * "Il brano e' DAVVERO caricato?"
+ *
+ * Il bottone Export compare quasi subito, ma in quel momento la traccia non
+ * c'e' ancora: esportare li' darebbe un file sbagliato o vuoto. Serve quindi un
+ * cancello separato da inStudio() (che dice solo "siamo arrivati sulla pagina").
+ *
+ * PERCHE' NON "aspetta che la pagina sia caricata" (networkidle) E BASTA
+ * Studio e' un'applicazione a pagina singola: il documento risulta "caricato"
+ * quasi subito, mentre il brano arriva DOPO. E nel frattempo restano aperte
+ * connessioni di servizio (telemetria, stream) che non finiscono mai: aspettare
+ * "zero richieste" o non basta o non succede mai.
+ *
+ * PERCHE' NON UN TEMPO FISSO
+ * Un'attesa a tempo e' sempre sbagliata da una delle due parti: troppo corta
+ * quando la rete e' lenta o il brano e' lungo, e tempo buttato quando invece e'
+ * veloce. Serve solo come RETE DI SICUREZZA, non come criterio.
+ *
+ * COSA GUARDIAMO QUINDI
+ *  - un segnale di CONTENUTO: l'audio e' decodificato, oppure la forma d'onda
+ *    e' stata disegnata, oppure compare la durata attesa del brano. E' la prova
+ *    che la traccia e' dentro l'editor;
+ *  - la RETE ferma da qualche secondo (ignorando telemetria e stream);
+ * e pretendiamo che reggano INSIEME per qualche secondo di fila, cosi' un
+ * attimo di quiete a meta' caricamento non ci inganna.
+ * ------------------------------------------------------------------ */
+
+const P = () => S.pronto;
+
+/**
+ * Tiene il conto delle richieste di rete ancora in volo. Le richieste "vecchie"
+ * (stream, long-poll) e quelle di servizio non contano: altrimenti la rete non
+ * risulterebbe MAI ferma e resteremmo ad aspettare per sempre.
+ */
+function tracciaRete(page) {
+  const inVolo = new Map(); // richiesta -> quando e' partita
+  let ultimoEvento = Date.now();
+
+  const daIgnorare = (req) => {
+    const url = req.url();
+    return P().ignoraRete.some((f) => url.includes(f));
+  };
+
+  const parte = (req) => {
+    if (daIgnorare(req)) return;
+    inVolo.set(req, Date.now());
+    ultimoEvento = Date.now();
+  };
+
+  const finisce = (req) => {
+    if (daIgnorare(req)) return;
+    inVolo.delete(req);
+    // ATTENZIONE: aggiorniamo l'orologio anche per richieste che non stavamo
+    // seguendo. Il download pesante dell'audio parte spesso PRIMA che iniziamo
+    // ad ascoltare (cioe' al momento della navigazione): senza questa riga la
+    // sua conclusione passerebbe inosservata e la rete sembrerebbe "ferma"
+    // mentre il brano si sta ancora scaricando.
+    ultimoEvento = Date.now();
+  };
+
+  page.on("request", parte);
+  page.on("requestfinished", finisce);
+  page.on("requestfailed", finisce);
+
+  return {
+    stato() {
+      const ora = Date.now();
+      let attive = 0;
+      for (const [req, t] of inVolo) {
+        if (ora - t > P().richiestaVecchiaMs) inVolo.delete(req);
+        else attive++;
+      }
+      return { attive, fermaDa: ora - ultimoEvento };
+    },
+    ferma() {
+      const s = this.stato();
+      return s.attive === 0 && s.fermaDa >= P().reteFermaMs;
+    },
+    stop() {
+      page.off("request", parte);
+      page.off("requestfinished", finisce);
+      page.off("requestfailed", finisce);
+    },
+  };
+}
+
+/**
+ * Segnali di CONTENUTO letti dentro la pagina: e' la parte che dice davvero
+ * "il brano c'e'". Nessuno dei tre e' garantito su ogni versione di Studio,
+ * quindi ne basta uno e li registriamo tutti nel log.
+ */
+async function segnaliContenuto(page, durataAttesa) {
+  return page
+    .evaluate((durata) => {
+      // a) elementi audio/video con dati decodificati o durata nota
+      const media = Array.from(document.querySelectorAll("audio, video"));
+      const audioPronti = media.filter(
+        (m) => m.readyState >= 2 || (Number.isFinite(m.duration) && m.duration > 0)
+      ).length;
+
+      // b) forma d'onda disegnata: un canvas che non e' piu' vuoto
+      let canvasTotali = 0;
+      let canvasDisegnati = 0;
+      for (const c of document.querySelectorAll("canvas")) {
+        if (c.width < 40 || c.height < 8) continue;
+        canvasTotali++;
+        try {
+          const ctx = c.getContext("2d");
+          if (!ctx) continue; // WebGL: non leggibile da qui
+          const larghezza = Math.min(c.width, 400);
+          const dati = ctx.getImageData(0, 0, larghezza, c.height).data;
+          // campiona un pixel ogni 7 per non appesantire
+          let pieni = 0;
+          let letti = 0;
+          for (let i = 3; i < dati.length; i += 4 * 7) {
+            letti++;
+            if (dati[i] > 8) pieni++;
+          }
+          if (letti > 0 && pieni / letti > 0.02) canvasDisegnati++;
+        } catch (_) {
+          /* canvas non leggibile: lo ignoriamo */
+        }
+      }
+
+      // c) la durata attesa del brano compare in pagina (es. "2:57")
+      const testo = document.body ? document.body.innerText || "" : "";
+      const durataVisibile = !!durata && testo.includes(durata);
+
+      return {
+        audioPronti,
+        mediaTotali: media.length,
+        canvasTotali,
+        canvasDisegnati,
+        durataVisibile,
+      };
+    }, durataAttesa || null)
+    .catch(() => ({
+      audioPronti: 0,
+      mediaTotali: 0,
+      canvasTotali: 0,
+      canvasDisegnati: 0,
+      durataVisibile: false,
+    }));
+}
+
+/** Stato del bottone Export: presente? attivo? (solo informativo) */
+async function statoExport(page) {
+  for (const sel of P().exportButton) {
+    const b = page.locator(sel).locator("visible=true").first();
+    if ((await b.count().catch(() => 0)) > 0) {
+      const disabilitato = await b.isDisabled().catch(() => null);
+      return { presente: true, attivo: disabilitato === false, selettore: sel };
+    }
+  }
+  return { presente: false, attivo: false, selettore: null };
+}
+
+/**
+ * Aspetta che il BRANO sia caricato dentro Studio, non solo che la pagina si
+ * sia aperta. Da chiamare PRIMA dell'export.
+ *
+ * @param {object} opts { durata: "2:57", prefisso, timeout }
+ * @returns {Promise<object>} il rapporto sui segnali (utile nel log)
+ */
+async function attendiBranoCaricato(page, opts = {}) {
+  const p = opts.prefisso || "   ";
+  const timeout = opts.timeout || P().timeout;
+  const rete = tracciaRete(page);
+  const inizio = Date.now();
+  let stabileDa = null;
+  let ultimoLog = 0;
+  let ultimo = null;
+
+  log.info(`${p}attendo che il BRANO sia caricato in Studio (non solo la pagina)`);
+
+  try {
+    const ok = await hm.attesaAttiva(page, timeout, async () => {
+      const c = await segnaliContenuto(page, opts.durata);
+      const r = rete.stato();
+      const exp = await statoExport(page);
+
+      const contenuto =
+        c.audioPronti > 0 || c.canvasDisegnati > 0 || c.durataVisibile;
+      const pronto = contenuto && rete.ferma();
+
+      if (pronto) {
+        if (!stabileDa) stabileDa = Date.now();
+      } else {
+        stabileDa = null;
+      }
+
+      ultimo = { ...c, ...exp, rete: r, stabileDa };
+
+      // Un rigo di log ogni ~2s: la prima volta che gira su Suno vero, e' qui
+      // che si legge quali segnali esistono davvero e quali no.
+      if (Date.now() - ultimoLog > 2000) {
+        ultimoLog = Date.now();
+        log.info(
+          `${p}  audio ${c.audioPronti}/${c.mediaTotali} | ` +
+            `canvas disegnati ${c.canvasDisegnati}/${c.canvasTotali} | ` +
+            `durata attesa ${c.durataVisibile ? "sì" : "no"} | ` +
+            `rete ${r.attive} in volo, ferma da ${(r.fermaDa / 1000).toFixed(1)}s | ` +
+            `Export ${exp.presente ? (exp.attivo ? "attivo" : "disattivo") : "assente"}`
+        );
+      }
+
+      return (
+        !!stabileDa &&
+        Date.now() - stabileDa >= P().finestraStabile &&
+        Date.now() - inizio >= P().attesaMinima
+      );
+    });
+
+    const secondi = ((Date.now() - inizio) / 1000).toFixed(1);
+    if (!ok) {
+      // Rete di sicurezza: non blocchiamo il lavoro, ma lo diciamo forte.
+      log.warn(
+        `${p}il brano non risulta caricato dopo ${secondi}s: procedo comunque, ` +
+          "ma l'export potrebbe essere incompleto. Ultimi segnali: " +
+          JSON.stringify(ultimo)
+      );
+      return { pronto: false, secondi: Number(secondi), segnali: ultimo };
+    }
+
+    log.info(`${p}brano caricato in Studio dopo ${secondi}s: si può esportare`);
+    return { pronto: true, secondi: Number(secondi), segnali: ultimo };
+  } finally {
+    rete.stop();
+  }
+}
+
 /**
  * Percorso completo: riga del brano in /create -> (…) -> Edit -> Open in Studio.
  *
@@ -357,14 +597,30 @@ async function apriInStudioDaCreate(page, opts = {}) {
     context.off("page", onPage);
   }
 
+  // --- 6) il brano e' DENTRO? ---
+  // Essere sulla pagina di Studio non basta: il bottone Export e' gia' li',
+  // ma la traccia non e' ancora caricata. Chi chiama non deve ricordarsi di
+  // aspettare: l'attesa e' parte dell'apertura.
+  let caricamento = null;
+  if (opts.attendiBrano !== false) {
+    caricamento = await attendiBranoCaricato(target, {
+      durata: opts.durata,
+      prefisso: p,
+    });
+  }
+
   log.info(`${p}Studio aperto: ${target.url()}`);
-  return { page: target, url: target.url() };
+  return { page: target, url: target.url(), caricamento };
 }
 
 module.exports = {
   elencaBrani,
   trovaRigaBrano,
   apriInStudioDaCreate,
+  attendiBranoCaricato,
+  segnaliContenuto,
+  statoExport,
+  tracciaRete,
   attendiMenu,
   vociDi,
   vocePerTesto,
