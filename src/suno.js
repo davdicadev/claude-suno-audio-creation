@@ -23,6 +23,7 @@
  *   node src/suno.js                                  # tutti i progetti attivi
  *   node src/suno.js --project canale-lofi            # un solo progetto
  *   node src/suno.js --config path.json               # config alternativa
+ *   node src/suno.js --diagnostica-studio             # prova Studio, 0 crediti
  */
 
 const fs = require("fs");
@@ -31,12 +32,15 @@ const { chromium } = require("playwright");
 const { loadConfig } = require("./lib/config");
 const manifestLib = require("./lib/manifest");
 const SEL = require("./lib/suno-selectors");
+const studio = require("./lib/suno-studio");
+const hm = require("./lib/human-mouse");
 const log = require("./lib/logger");
 
 function parseArgs(argv) {
   const args = {
     loginOnly: false,
     downloadOnly: false,
+    diagnosticaStudio: false,
     project: null,
     config: null,
     profile: null,
@@ -45,7 +49,9 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === "--login-only") args.loginOnly = true;
     else if (a === "--download-only") args.downloadOnly = true;
-    else if (a === "--project") args.project = argv[++i];
+    else if (a === "--diagnostica-studio" || a === "--diagnostica") {
+      args.diagnosticaStudio = true;
+    } else if (a === "--project") args.project = argv[++i];
     else if (a === "--config") args.config = argv[++i];
     else if (a === "--profile") args.profile = argv[++i];
   }
@@ -758,6 +764,65 @@ async function downloadLibrary(context, page, project) {
 }
 
 /**
+ * DIAGNOSTICA STUDIO (0 crediti): verifica che l'automazione sappia aprire un
+ * brano in Studio, senza generare né scaricare nulla.
+ *
+ * Il giro e' volutamente CORTO: si resta sulla pagina /create e si usa il menu
+ * (…) della riga del brano. Non si apre piu' la pagina /song/<id>, che era un
+ * caricamento in piu' senza alcun vantaggio: 'Open in Studio' c'e' gia' qui.
+ */
+async function diagnosticaStudio(context, page, project) {
+  log.step(
+    `=== DIAGNOSTICA STUDIO (0 crediti) — progetto '${project.nome}', ` +
+      `account '${project.sunoProfilo}' ===`
+  );
+
+  log.step("1/3 — apro la pagina di creazione");
+  await ensureCreatePage(page, project);
+  await page.bringToFront().catch(() => {});
+  log.info(`   URL: ${page.url()}`);
+
+  log.step("2/3 — leggo la lista dei brani dalla pagina");
+  let brani = await studio.elencaBrani(page);
+  if (brani.length === 0) {
+    // La lista puo' caricarsi pigramente: un piccolo scroll e si riprova.
+    await page.mouse.wheel(0, 600).catch(() => {});
+    await hm.pausa(page, 1500, 2500);
+    brani = await studio.elencaBrani(page);
+  }
+  log.info(`   brani trovati: ${brani.length}`);
+  for (const b of brani.slice(0, 10)) {
+    log.info(`   - ${b.titolo}  (${b.id})`);
+  }
+  if (brani.length === 0) {
+    await saveDebugShot(page, project, "diagnostica-lista-brani");
+    throw new Error(
+      "nessun brano nella lista di /create: serve almeno un brano gia' esistente " +
+        "per provare Studio (nessun credito viene speso). Vedi lo screenshot " +
+        "'errore-diagnostica-lista-brani.png'."
+    );
+  }
+
+  const scelto = brani[0];
+  log.info(`   userò questo brano per la prova: "${scelto.titolo}" (${scelto.id})`);
+
+  log.step("3/3 — apro il brano in Studio dal menu (…) della pagina /create");
+  try {
+    const { url } = await studio.apriInStudioDaCreate(page, {
+      songId: scelto.id,
+      titolo: scelto.titolo,
+      prefisso: "   ",
+    });
+    log.step(`DIAGNOSTICA OK: Studio aperto su ${url}. Nessun credito speso.`);
+  } catch (e) {
+    await saveDebugShot(page, project, "diagnostica-studio");
+    log.error(`   apertura in Studio fallita: ${e.message}`);
+    log.error(`   ultima pagina: ${page.url()}`);
+    throw e;
+  }
+}
+
+/**
  * Attende che il lotto appena inviato sia generato e ne scarica i brani.
  * Scarica le coppie complete (A/B) man mano che sono pronte; quando ha
  * scaricato ~target brani (o Suno smette di produrne di nuovi) ritorna.
@@ -987,11 +1052,24 @@ async function openContextForProfile(cfg, profile) {
 
   // Flag che riducono il "fingerprint" da automazione: senza questi, Google
   // blocca il login OAuth ("questo browser potrebbe non essere sicuro").
+  //
+  // I flag --disable-*background*/occlusion servono a un'altra cosa, altrettanto
+  // importante: senza di loro Chrome METTE IN PAUSA le pagine di una finestra
+  // che non ha il fuoco o che e' coperta da altre (timer rallentati, rendering
+  // fermo). Pagine pesanti come Studio, in quello stato, non finiscono mai di
+  // caricare: e' il motivo per cui muovendo il mouse a mano l'automazione
+  // "si sbloccava" e da sola restava ferma sulla schermata della canzone.
   const baseOpts = {
     headless: false,
     viewport: { width: 1400, height: 900 },
     acceptDownloads: true,
-    args: ["--disable-blink-features=AutomationControlled"],
+    args: [
+      "--disable-blink-features=AutomationControlled",
+      "--disable-background-timer-throttling",
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding",
+      "--disable-features=CalculateNativeWinOcclusion",
+    ],
     ignoreDefaultArgs: ["--enable-automation"],
   };
 
@@ -1089,17 +1167,23 @@ async function main() {
         );
         current = { profile: project.sunoProfilo, context, page };
       }
-      if (args.downloadOnly) {
+      if (args.diagnosticaStudio) {
+        await diagnosticaStudio(current.context, current.page, project);
+      } else if (args.downloadOnly) {
         await downloadLibrary(current.context, current.page, project);
       } else {
         await processProject(current.context, current.page, project);
       }
     }
-    log.step(
-      args.downloadOnly
-        ? "Solo-download completato (nessun credito speso)."
-        : "Fase generazione/download completata."
-    );
+    if (args.diagnosticaStudio) {
+      log.step("Diagnostica Studio completata (nessun credito speso).");
+    } else {
+      log.step(
+        args.downloadOnly
+          ? "Solo-download completato (nessun credito speso)."
+          : "Fase generazione/download completata."
+      );
+    }
   } finally {
     if (current) {
       try {

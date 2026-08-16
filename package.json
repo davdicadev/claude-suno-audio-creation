@@ -11,7 +11,9 @@
     "generate": "node src/suno.js",
     "titles": "node src/rewrite-titles.js",
     "playlists": "node src/build-playlists.js",
-    "login": "node src/suno.js --login-only"
+    "login": "node src/suno.js --login-only",
+    "diagnostica-studio": "node src/suno.js --diagnostica-studio",
+    "test:studio": "node test/studio.test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",

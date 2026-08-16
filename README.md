@@ -209,6 +209,33 @@ Opzioni utili:
 - `node src/rewrite-titles.js --dry-run` — mostra i nuovi titoli senza rinominare
 - `node src/build-playlists.js --reencode` — ricodifica invece di copiare (se il montaggio "copy" fallisce)
 
+### Diagnostica Studio (0 crediti)
+
+Verifica che l'automazione sappia aprire un brano in **Studio**, senza generare né scaricare nulla:
+
+```bash
+node src/suno.js --diagnostica-studio
+# oppure su un solo progetto:
+node src/suno.js --diagnostica-studio --project canale-lofi
+```
+
+Il giro resta sulla pagina `/create` e usa il menu `(…)` della riga del brano
+(`Edit` → `Open in Studio`): **non** apre più la pagina `/song/<id>`, che era un
+caricamento in più senza vantaggi.
+
+I passaggi nei menu si fanno **muovendo davvero il puntatore** (`src/lib/human-mouse.js`),
+non con click che lo teletrasportano: i menu di Suno si aprono al passaggio del
+mouse e si richiudono se il puntatore "salta". Durante il caricamento di Studio
+il puntatore continua a muoversi di pochi pixel e la finestra resta in primo
+piano, così Chrome non mette in pausa la pagina — è lo stesso effetto che
+ottenevi muovendo il mouse a mano.
+
+Per provare tutto il percorso **senza toccare Suno** (gira su una pagina finta):
+
+```bash
+npm run test:studio
+```
+
 ### Da n8n
 
 1. Importa `n8n/suno-audio-automation.json` in n8n.
@@ -249,6 +276,10 @@ Esempio: il titolo `Dreamin' in Rio (café)` diventa il file `Dreamin in Rio caf
 ## Se Suno cambia interfaccia
 
 La generazione e il download dipendono da alcuni selettori della pagina Suno. Se qualcosa smette di funzionare, quasi sempre basta aggiornare **un** selettore in **`src/lib/suno-selectors.js`** (campo prompt, toggle strumentale, bottone Create). Non serve toccare la logica.
+
+Lo stesso vale per Studio: nomi delle voci di menu, finestra di scelta e
+rilevamento di Studio stanno tutti nella sezione `studio` dello stesso file.
+Dopo una modifica, `npm run test:studio` verifica il percorso in pochi secondi.
 
 ---
 
